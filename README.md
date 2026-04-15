@@ -19,6 +19,8 @@ cp backend/.env.example backend/.env
 npm run install:all
 ```
 
+Populate Plaid sandbox credentials in `backend/.env` before starting the app.
+
 ## Run as a single app (one command)
 
 ```bash
@@ -45,6 +47,9 @@ Default URL: `http://localhost:3001`
 - `GET /api/health` health check
 - `GET /api/expenses` list expenses
 - `POST /api/expenses` create expense
+- `POST /api/plaid/link-token/create` create Plaid Link token
+- `POST /api/plaid/public-token/exchange` exchange public token for access token
+- `POST /api/plaid/transactions/sync` sync transactions for the connected Item
 
 ### Create expense request body
 
@@ -59,3 +64,4 @@ Default URL: `http://localhost:3001`
 
 - Expenses are currently stored in memory (non-persistent).
 - Do not commit local `.env` files.
+- Plaid tokens are encrypted in memory for MVP and should move to encrypted persistent storage before production use.
