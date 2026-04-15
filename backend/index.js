@@ -2,12 +2,20 @@ import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 const CORS_ORIGIN = process.env.CORS_ORIGIN;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const frontendDistPath = path.resolve(__dirname, "../frontend/dist");
+const frontendIndexPath = path.join(frontendDistPath, "index.html");
+const hasFrontendBuild = existsSync(frontendIndexPath);
 
 if (CORS_ORIGIN) {
   const allowedOrigins = CORS_ORIGIN.split(",").map((origin) => origin.trim());
@@ -36,8 +44,8 @@ function validateExpensePayload(payload) {
   return { valid: true, name, amount: Number(amountValue.toFixed(2)) };
 }
 
-app.get("/", (_req, res) => {
-  res.send("Finaryo backend is running");
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok" });
 });
 
 app.get("/api/expenses", (_req, res) => {
@@ -61,6 +69,22 @@ app.post("/api/expenses", (req, res) => {
 
   return res.status(201).json({ message: "Expense saved.", data: expense });
 });
+
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "API route not found" });
+});
+
+if (hasFrontendBuild) {
+  app.use(express.static(frontendDistPath));
+
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    res.sendFile(frontendIndexPath);
+  });
+} else {
+  app.get("/", (_req, res) => {
+    res.send("Frontend build not found. Run `npm run build` in the repository root.");
+  });
+}
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
