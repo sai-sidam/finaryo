@@ -1,45 +1,48 @@
-# Finaryo Full-Stack App
+# Finaryo Monolith (Single Server)
 
-This repository contains:
+This repository now runs as one monolith app:
 
-- `backend/`: Express API for expenses
-- `frontend/`: React + Vite client connected to the API
+- `frontend/` is built with Vite
+- `backend/` (Express) serves both API routes and the built frontend files
+
+You can run everything from the repository root.
 
 ## Prerequisites
 
 - Node.js 18+ (Node.js 20+ recommended)
 - npm
 
-## Setup
-
-### 1) Backend
+## First-time setup
 
 ```bash
-cd backend
-cp .env.example .env
-npm install
-npm start
+cp backend/.env.example backend/.env
+npm run install:all
 ```
 
-Backend runs on `http://localhost:3001`.
-
-### 2) Frontend
-
-Open a second terminal:
+## Run as a single app (one command)
 
 ```bash
-cd frontend
-npm install
-npm run dev
+npm run start:monolith
 ```
 
-Frontend runs on `http://localhost:5173`.
+What this does:
 
-The frontend uses Vite proxy so requests to `/api/*` are forwarded to `http://localhost:3001`.
+1. Builds the frontend (`frontend/dist`)
+2. Starts the backend server
+3. Serves UI and API from the same server/port
+
+Default URL: `http://localhost:3001`
+
+## Development notes
+
+- If you want frontend hot-reload while developing UI:
+  - `npm run dev:frontend` (Vite dev server)
+  - `npm run dev:backend` (Express API)
+- For production-like local testing, prefer `npm run start:monolith`.
 
 ## API Endpoints
 
-- `GET /` health check
+- `GET /api/health` health check
 - `GET /api/expenses` list expenses
 - `POST /api/expenses` create expense
 
