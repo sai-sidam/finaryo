@@ -16,6 +16,7 @@ model User {
   updatedAt            DateTime              @updatedAt
   expenses             Expense[]
   importedTransactions ImportedTransaction[]
+  statementImports     StatementImport[]
   merchantMemories     MerchantCategoryMemory[]
   paydayEvents         PaydayEvent[]
   debtAccounts         DebtAccount[]
@@ -55,11 +56,13 @@ model ImportedTransaction {
   id                String   @id @default(cuid())
   userId            String
   statementFileName String
+  statementFileHash String?
   accountName       String   @default("Primary")
   accountType       String   @default("checking")
   date              DateTime
   description       String
   normalizedDescription String @default("")
+  transactionFingerprint String @default("")
   amount            Float
   category          String
   categorizationSource CategorizationSource @default(ai)
@@ -71,7 +74,22 @@ model ImportedTransaction {
 
   @@index([userId, date])
   @@index([userId, accountName, date])
+  @@index([userId, transactionFingerprint])
   @@index([userId, categorizationStatus, createdAt])
+}
+
+model StatementImport {
+  id            String   @id @default(cuid())
+  userId        String
+  statementFileName String
+  fileHash      String
+  importedCount Int      @default(0)
+  duplicateCount Int     @default(0)
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fileHash])
+  @@index([userId, createdAt])
 }
 
 model MerchantCategoryMemory {

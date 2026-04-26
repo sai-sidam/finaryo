@@ -601,7 +601,8 @@ button:disabled {
 .savings-panel,
 .insights-panel,
 .rules-panel,
-.payslip-panel {
+.payslip-panel,
+.accounts-panel {
   border: 1px solid #374151;
   border-radius: 10px;
   padding: 1rem;
@@ -612,7 +613,8 @@ button:disabled {
 .savings-panel h2,
 .insights-panel h2,
 .rules-panel h2,
-.payslip-panel h2 {
+.payslip-panel h2,
+.accounts-panel h2 {
   margin: 0 0 0.35rem;
   font-size: 1.05rem;
 }
@@ -620,7 +622,8 @@ button:disabled {
 .savings-panel p,
 .insights-panel p,
 .rules-panel p,
-.payslip-panel p {
+.payslip-panel p,
+.accounts-panel p {
   margin: 0;
   color: #cbd5e1;
 }

@@ -31,8 +31,11 @@ export type UploadedTransaction = {
 export type UploadResult = {
   importedCount: number;
   skippedCount: number;
+  duplicateCount?: number;
   autoCategorizedCount?: number;
   needsReviewCount?: number;
+  accountName?: string;
+  accountType?: string;
   transactions: UploadedTransaction[];
   invalidRows: Array<{
     rowNumber: number;

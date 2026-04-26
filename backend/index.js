@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -270,6 +271,16 @@ function sanitizeCategory(category, fallbackCategory = "Uncategorized") {
   return CATEGORY_WHITELIST.includes(normalized) ? normalized : fallbackCategory;
 }
 
+function buildTransactionFingerprint({ date, description, amount, accountName, accountType }) {
+  const dayKey = new Date(date).toISOString().slice(0, 10);
+  const normalizedDescription = normalizeDescriptionForMemory(description);
+  const normalizedAmount = Number(Number(amount).toFixed(2)).toFixed(2);
+  const normalizedAccount = `${String(accountName ?? "").toLowerCase().trim()}|${String(accountType ?? "")
+    .toLowerCase()
+    .trim()}`;
+  return `${dayKey}|${normalizedAmount}|${normalizedDescription}|${normalizedAccount}`;
+}
+
 async function classifyCategoryWithGemini({ description, amount }) {
   if (!runtimeConfig.GEMINI_API_KEY) {
     return null;
@@ -361,6 +372,155 @@ function findColumnIndex(normalizedHeaders, aliases) {
   return normalizedHeaders.findIndex((header) => aliasSet.has(header));
 }
 
+function inferAccountTypeFromText(text) {
+  const normalized = text.toLowerCase();
+  if (
+    /(credit card|card statement|visa|mastercard|amex|american express|discover|statement period|minimum due|total due|payment due date|available credit|credit limit)/i.test(
+      normalized,
+    )
+  ) {
+    return "credit_card";
+  }
+  if (/(savings|saving account)/i.test(normalized)) {
+    return "savings";
+  }
+  if (/(loan|emi|mortgage|car loan|personal loan)/i.test(normalized)) {
+    return "loan";
+  }
+  // Only classify as cash when explicitly a cash account, not because the statement contains "cashback/cash advance".
+  if (/(cash account|wallet balance|petty cash|cash ledger)/i.test(normalized)) {
+    return "cash";
+  }
+  return "checking";
+}
+
+function sanitizeAccountName(value) {
+  const cleaned = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.slice(0, 80);
+}
+
+function inferBankNameFromText(text) {
+  const normalized = String(text ?? "").toLowerCase();
+  const knownBanks = [
+    { name: "Chase", pattern: /(chase|jpmorgan)/i },
+    { name: "Bank of America", pattern: /(bank of america|bofa)/i },
+    { name: "Wells Fargo", pattern: /(wells fargo)/i },
+    { name: "Citi", pattern: /(citibank|citi)/i },
+    { name: "Capital One", pattern: /(capital one)/i },
+    { name: "American Express", pattern: /(american express|amex)/i },
+    { name: "Discover", pattern: /(discover)/i },
+    { name: "HDFC Bank", pattern: /(hdfc)/i },
+    { name: "ICICI Bank", pattern: /(icici)/i },
+    { name: "SBI", pattern: /(state bank of india|sbi)/i },
+    { name: "Axis Bank", pattern: /(axis bank)/i },
+  ];
+  const match = knownBanks.find((bank) => bank.pattern.test(normalized));
+  return match?.name ?? null;
+}
+
+function buildStableAccountLabel({ bankName, accountType, endingDigits }) {
+  const typeLabelMap = {
+    credit_card: "Credit Card",
+    checking: "Checking",
+    savings: "Savings",
+    loan: "Loan",
+    cash: "Cash",
+  };
+  const base = bankName ? `${bankName} ${typeLabelMap[accountType] ?? "Account"}` : typeLabelMap[accountType] ?? "Account";
+  if (endingDigits) {
+    return `${base} • ${endingDigits}`;
+  }
+  return base;
+}
+
+function isLikelySyntheticMonthLabel(value) {
+  const text = String(value ?? "").toLowerCase().trim();
+  if (!text) return true;
+  const digits = (text.match(/\d/g) ?? []).length;
+  return (
+    /^[a-z]{3,9}\s?\d{4}/i.test(text) ||
+    /^\d{4}\s+\d{2}\s+\d{2}/i.test(text) ||
+    /^\d{4}[-_/]?\d{2}$/i.test(text) ||
+    /(statement|summary|report|period|transaction download|downloaded transactions|export|csv|xlsx)/i.test(
+      text,
+    ) ||
+    digits >= Math.ceil(text.replace(/\s+/g, "").length * 0.45)
+  );
+}
+
+function inferAccountMetadata({ fileName, sheetName, rows, headerRowIndex }) {
+  const scanLimit = Math.min(rows.length, Math.max(headerRowIndex + 1, 20));
+  const scopeRows = rows.slice(0, scanLimit);
+  const cellTexts = scopeRows
+    .flatMap((row) => (Array.isArray(row) ? row : []))
+    .map((cell) => String(cell ?? "").trim())
+    .filter(Boolean);
+  const scopeText = cellTexts.join(" | ");
+  const fileStem = String(fileName ?? "Primary")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+
+  let accountName =
+    cellTexts.find((text) => /^account name[:\s-]+/i.test(text))?.replace(/^account name[:\s-]+/i, "") ??
+    cellTexts.find((text) => /^a\/?c name[:\s-]+/i.test(text))?.replace(/^a\/?c name[:\s-]+/i, "") ??
+    null;
+  const bankName = inferBankNameFromText(`${scopeText} ${sheetName} ${fileName}`);
+  const accountNumberText = cellTexts.find((text) =>
+    /(account number|a\/?c number|acct number|ending|xxxx|x{2,})/i.test(text),
+  );
+  const endingMatch = accountNumberText?.match(/(\d{3,6})\s*$/) ?? null;
+  const endingDigits = endingMatch?.[1] ?? null;
+
+  if (!accountName) {
+    if (accountNumberText) {
+      const suffix = endingDigits ? ` • ${endingDigits}` : "";
+      accountName = `${sanitizeAccountName(fileStem || sheetName || "Primary")}${suffix}`;
+    }
+  }
+
+  const accountType = inferAccountTypeFromText(`${scopeText} ${sheetName} ${fileName}`);
+  const fallbackName = sanitizeAccountName(fileStem || sheetName || "Primary");
+  const inferredRawName = sanitizeAccountName(accountName || fallbackName || "Primary");
+  const inferredName = isLikelySyntheticMonthLabel(inferredRawName)
+    ? buildStableAccountLabel({ bankName, accountType, endingDigits })
+    : inferredRawName;
+
+  return {
+    accountName: sanitizeAccountName(inferredName || "Primary"),
+    accountType,
+  };
+}
+
+function isLikelyNoiseRow(description, amount, date, row) {
+  const normalizedDescription = String(description ?? "").toLowerCase().trim();
+  const hasDate = Boolean(date);
+  const hasAmount = Number.isFinite(amount);
+  if (!normalizedDescription && !hasDate && !hasAmount) {
+    return true;
+  }
+  if (
+    /(opening balance|closing balance|previous balance|new balance|available credit|credit limit|minimum due|payment due date|total amount due|statement period|finance charge|interest charged|total credits|total debits|totals?)/i.test(
+      normalizedDescription,
+    )
+  ) {
+    return true;
+  }
+  const rowValues = Array.isArray(row)
+    ? row.map((item) => String(item ?? "").toLowerCase()).join(" | ")
+    : String(row ?? "").toLowerCase();
+  if (
+    /(page \d+ of \d+|customer care|for queries|please pay|late fee|credit score|rewards summary|this is a computer generated statement)/i.test(
+      rowValues,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function detectStatementHeader(rows) {
   const MAX_SCAN_ROWS = 30;
   for (let rowIndex = 0; rowIndex < Math.min(rows.length, MAX_SCAN_ROWS); rowIndex += 1) {
@@ -446,6 +606,66 @@ function detectStatementHeader(rows) {
   return null;
 }
 
+function detectStatementColumnsWithoutHeader(rows) {
+  const MAX_SCAN_ROWS = Math.min(rows.length, 40);
+  const columnStats = new Map();
+
+  for (let rowIndex = 0; rowIndex < MAX_SCAN_ROWS; rowIndex += 1) {
+    const row = Array.isArray(rows[rowIndex]) ? rows[rowIndex] : [];
+    row.forEach((cell, colIndex) => {
+      const value = String(cell ?? "").trim();
+      if (!value) return;
+      const stats = columnStats.get(colIndex) ?? {
+        dateHits: 0,
+        amountHits: 0,
+        textHits: 0,
+      };
+      if (normalizeExcelDate(cell)) {
+        stats.dateHits += 1;
+      }
+      if (parseAmountValue(cell) != null) {
+        stats.amountHits += 1;
+      }
+      if (/[a-zA-Z]/.test(value)) {
+        stats.textHits += 1;
+      }
+      columnStats.set(colIndex, stats);
+    });
+  }
+
+  const candidates = [...columnStats.entries()].map(([index, stats]) => ({ index, ...stats }));
+  const dateCandidate = candidates.sort((a, b) => b.dateHits - a.dateHits)[0];
+  const amountCandidate = candidates
+    .filter((c) => c.index !== dateCandidate?.index)
+    .sort((a, b) => b.amountHits - a.amountHits)[0];
+  const descriptionCandidate = candidates
+    .filter((c) => c.index !== dateCandidate?.index && c.index !== amountCandidate?.index)
+    .sort((a, b) => b.textHits - a.textHits)[0];
+
+  if (
+    !dateCandidate ||
+    !amountCandidate ||
+    !descriptionCandidate ||
+    dateCandidate.dateHits < 3 ||
+    amountCandidate.amountHits < 3 ||
+    descriptionCandidate.textHits < 3
+  ) {
+    return null;
+  }
+
+  return {
+    headerRowIndex: -1,
+    columns: {
+      dateIndex: dateCandidate.index,
+      descriptionIndex: descriptionCandidate.index,
+      amountIndex: amountCandidate.index,
+      debitIndex: -1,
+      creditIndex: -1,
+      categoryIndex: -1,
+    },
+  };
+}
+
 function normalizeExcelDate(value) {
   if (value == null || value === "") {
     return null;
@@ -454,12 +674,23 @@ function normalizeExcelDate(value) {
     return value.toISOString();
   }
   if (typeof value === "number") {
-    const parsed = XLSX.SSF.parse_date_code(value);
-    if (!parsed) {
+    const parseDateCode = XLSX?.SSF?.parse_date_code;
+    if (typeof parseDateCode === "function") {
+      const parsed = parseDateCode(value);
+      if (!parsed) {
+        return null;
+      }
+      const normalized = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S));
+      return normalized.toISOString();
+    }
+    // Fallback for environments where XLSX.SSF is unavailable.
+    const excelEpoch = Date.UTC(1899, 11, 30);
+    const millis = Math.round(value * 24 * 60 * 60 * 1000);
+    const maybeDateFromSerial = new Date(excelEpoch + millis);
+    if (Number.isNaN(maybeDateFromSerial.getTime())) {
       return null;
     }
-    const normalized = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S));
-    return normalized.toISOString();
+    return maybeDateFromSerial.toISOString();
   }
 
   const maybeDate = new Date(String(value));
@@ -540,6 +771,10 @@ function normalizeTransactionRow(row, index, columnIndexes = null) {
   const normalizedDate = normalizeExcelDate(date);
   const normalizedCategory = String(category ?? "").trim();
 
+  if (isLikelyNoiseRow(normalizedDescription, normalizedAmount, normalizedDate, row)) {
+    return { ignored: true };
+  }
+
   // Ignore non-data rows (headers/footers/empty rows) without polluting invalidRows.
   if (!normalizedDescription && !normalizedDate && (normalizedAmount == null || !Number.isFinite(normalizedAmount))) {
     return { ignored: true };
@@ -597,7 +832,8 @@ function parseStatementFile(file) {
   }
 
   const detectedHeader = detectStatementHeader(matrixRows);
-  if (!detectedHeader) {
+  const detectedColumns = detectedHeader ?? detectStatementColumnsWithoutHeader(matrixRows);
+  if (!detectedColumns) {
     const error = new Error(
       "Could not detect statement columns. Please include headers for date, description, and amount/debit/credit.",
     );
@@ -607,11 +843,17 @@ function parseStatementFile(file) {
 
   const validTransactions = [];
   const invalidRows = [];
-  const dataRows = matrixRows.slice(detectedHeader.headerRowIndex + 1);
+  const dataRows =
+    detectedColumns.headerRowIndex >= 0
+      ? matrixRows.slice(detectedColumns.headerRowIndex + 1)
+      : matrixRows;
 
   dataRows.forEach((row, index) => {
-    const sheetRowNumber = detectedHeader.headerRowIndex + index + 2;
-    const result = normalizeTransactionRow(row, sheetRowNumber - 2, detectedHeader.columns);
+    const sheetRowNumber =
+      detectedColumns.headerRowIndex >= 0
+        ? detectedColumns.headerRowIndex + index + 2
+        : index + 1;
+    const result = normalizeTransactionRow(row, sheetRowNumber - 2, detectedColumns.columns);
     if (result.ignored) {
       return;
     }
@@ -622,7 +864,14 @@ function parseStatementFile(file) {
     }
   });
 
-  return { validTransactions, invalidRows };
+  const accountMetadata = inferAccountMetadata({
+    fileName: file.originalname,
+    sheetName: firstSheetName,
+    rows: matrixRows,
+    headerRowIndex: Math.max(detectedColumns.headerRowIndex, 0),
+  });
+
+  return { validTransactions, invalidRows, accountMetadata };
 }
 
 function getDefaultUserIdOrThrow() {
@@ -2123,17 +2372,61 @@ app.post("/api/plaid/transactions/sync", async (req, res, next) => {
 
 app.post("/api/transactions/upload", statementUpload.single("statement"), async (req, res, next) => {
   try {
+    if (!req.file?.buffer) {
+      return res.status(400).json({ error: "Missing statement file data." });
+    }
     const parsed = parseStatementFile(req.file);
     const userId = getDefaultUserIdOrThrow();
     const statementFileName = req.file?.originalname ?? "statement";
-    const accountNameRaw = typeof req.body?.accountName === "string" ? req.body.accountName.trim() : "";
-    const accountTypeRaw = typeof req.body?.accountType === "string" ? req.body.accountType.trim().toLowerCase() : "";
-    const accountName = accountNameRaw || "Primary";
-    const accountType = ["checking", "savings", "credit_card", "loan", "cash"].includes(accountTypeRaw)
-      ? accountTypeRaw
-      : "checking";
+    const statementFileHash = createHash("sha256").update(req.file.buffer).digest("hex");
+    const existingImport = await prisma.statementImport.findFirst({
+      where: { userId, fileHash: statementFileHash },
+    });
+    if (existingImport) {
+      return res.status(200).json({
+        data: {
+          importedCount: 0,
+          skippedCount: parsed.invalidRows.length,
+          duplicateCount: parsed.validTransactions.length,
+          autoCategorizedCount: 0,
+          needsReviewCount: 0,
+          accountName: parsed.accountMetadata?.accountName ?? "Primary",
+          accountType: parsed.accountMetadata?.accountType ?? "checking",
+          transactions: [],
+          invalidRows: parsed.invalidRows,
+          duplicateReason: "This statement file was already imported (same file hash).",
+        },
+      });
+    }
+    const accountName = parsed.accountMetadata?.accountName ?? "Primary";
+    const accountType = parsed.accountMetadata?.accountType ?? "checking";
     const savedTransactions = [];
+    let duplicateCount = 0;
+    const seenFingerprintsInFile = new Set();
     for (const transaction of parsed.validTransactions) {
+      const transactionFingerprint = buildTransactionFingerprint({
+        date: transaction.date,
+        description: transaction.description,
+        amount: transaction.amount,
+        accountName,
+        accountType,
+      });
+      if (seenFingerprintsInFile.has(transactionFingerprint)) {
+        duplicateCount += 1;
+        continue;
+      }
+      seenFingerprintsInFile.add(transactionFingerprint);
+      const existingTransaction = await prisma.importedTransaction.findFirst({
+        where: {
+          userId,
+          transactionFingerprint,
+        },
+        select: { id: true },
+      });
+      if (existingTransaction) {
+        duplicateCount += 1;
+        continue;
+      }
       const categorization = await resolveCategorizationDecision({
         userId,
         description: transaction.description,
@@ -2144,11 +2437,13 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
         data: {
           userId,
           statementFileName,
+          statementFileHash,
           accountName,
           accountType,
           date: new Date(transaction.date),
           description: transaction.description,
           normalizedDescription: categorization.normalizedDescription,
+          transactionFingerprint,
           amount: transaction.amount,
           category: categorization.category,
           categorizationSource: categorization.source,
@@ -2159,6 +2454,15 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
       });
       savedTransactions.push(saved);
     }
+    await prisma.statementImport.create({
+      data: {
+        userId,
+        statementFileName,
+        fileHash: statementFileHash,
+        importedCount: savedTransactions.length,
+        duplicateCount,
+      },
+    });
     const autoCategorizedCount = savedTransactions.filter(
       (transaction) => transaction.categorizationStatus === "auto_assigned",
     ).length;
@@ -2170,8 +2474,11 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
       data: {
         importedCount: savedTransactions.length,
         skippedCount: parsed.invalidRows.length,
+        duplicateCount,
         autoCategorizedCount,
         needsReviewCount,
+        accountName,
+        accountType,
         transactions: savedTransactions.map((transaction) => ({
           id: transaction.id,
           date: transaction.date.toISOString(),

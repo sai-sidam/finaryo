@@ -20,6 +20,7 @@ import type {
 } from "./types";
 import { buildCalendarDays, formatCurrency, monthStartDate, toMonthKey } from "./utils";
 import InsightsSection from "./components/InsightsSection";
+import AccountsSection from "./components/AccountsSection";
 import DebtSection from "./components/DebtSection";
 import PayslipSection from "./components/PayslipSection";
 import PaydaySection from "./components/PaydaySection";
@@ -28,7 +29,7 @@ import SavingsSection from "./components/SavingsSection";
 import TransactionsSection from "./components/TransactionsSection";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
-type AppSection = "dashboard" | "transactions" | "cashflow" | "debts" | "savings" | "insights";
+type AppSection = "dashboard" | "transactions" | "cashflow" | "debts" | "savings" | "insights" | "accounts";
 
 function App() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -45,8 +46,6 @@ function App() {
   const [plaidSummary, setPlaidSummary] = useState<PlaidSyncSummary | null>(null);
   const [statementFile, setStatementFile] = useState<File | null>(null);
   const [isUploadingStatement, setIsUploadingStatement] = useState(false);
-  const [statementAccountName, setStatementAccountName] = useState("Primary Checking");
-  const [statementAccountType, setStatementAccountType] = useState("checking");
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [searchText, setSearchText] = useState("");
@@ -102,6 +101,7 @@ function App() {
   const [insightsMonth, setInsightsMonth] = useState(() => toMonthKey(new Date()));
   const [insights, setInsights] = useState<MonthlyInsights | null>(null);
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [isLoadingBalanceSheet, setIsLoadingBalanceSheet] = useState(false);
   const [balanceSheet, setBalanceSheet] = useState<BalanceSheetInsights | null>(null);
   const [recurringCandidates, setRecurringCandidates] = useState<RecurringCandidate[]>([]);
   const [isLoadingRecurring, setIsLoadingRecurring] = useState(false);
@@ -301,6 +301,7 @@ function App() {
   }
 
   async function loadBalanceSheet() {
+    setIsLoadingBalanceSheet(true);
     try {
       const response = await fetch(`${API_BASE_URL}/api/insights/balance-sheet?month=${insightsMonth}`);
       const payload = (await response.json()) as { error?: string; data?: BalanceSheetInsights };
@@ -310,6 +311,8 @@ function App() {
       setBalanceSheet(payload.data);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load balance sheet.");
+    } finally {
+      setIsLoadingBalanceSheet(false);
     }
   }
 
@@ -484,8 +487,6 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("statement", statementFile);
-      formData.append("accountName", statementAccountName);
-      formData.append("accountType", statementAccountType);
 
       const response = await fetch(`${API_BASE_URL}/api/transactions/upload`, {
         method: "POST",
@@ -847,6 +848,7 @@ function App() {
     { id: "debts", label: "Debts & Loans" },
     { id: "savings", label: "Savings" },
     { id: "insights", label: "Insights & Rules" },
+    { id: "accounts", label: "Accounts" },
   ];
   const activeSectionLabel = navItems.find((item) => item.id === activeSection)?.label ?? "Workspace";
 
@@ -912,23 +914,6 @@ function App() {
           <p>Upload a .xlsx, .xls, or .csv file to import transactions while Plaid is optional.</p>
           <form className="upload-form" onSubmit={handleStatementUpload}>
             <input
-              type="text"
-              value={statementAccountName}
-              onChange={(event) => setStatementAccountName(event.target.value)}
-              placeholder="Account name (e.g. Chase Checking)"
-              required
-            />
-            <select
-              value={statementAccountType}
-              onChange={(event) => setStatementAccountType(event.target.value)}
-            >
-              <option value="checking">Checking</option>
-              <option value="savings">Savings</option>
-              <option value="credit_card">Credit Card</option>
-              <option value="loan">Loan</option>
-              <option value="cash">Cash</option>
-            </select>
-            <input
               type="file"
               accept=".xlsx,.xls,.csv"
               onChange={(event) => {
@@ -945,11 +930,20 @@ function App() {
               <strong>Import summary</strong>
               <span>Imported: {uploadResult.importedCount}</span>
               <span>Skipped: {uploadResult.skippedCount}</span>
+              {typeof uploadResult.duplicateCount === "number" && (
+                <span>Skipped duplicates: {uploadResult.duplicateCount}</span>
+              )}
               {typeof uploadResult.autoCategorizedCount === "number" && (
                 <span>Auto-categorized: {uploadResult.autoCategorizedCount}</span>
               )}
               {typeof uploadResult.needsReviewCount === "number" && (
                 <span>Needs review: {uploadResult.needsReviewCount}</span>
+              )}
+              {uploadResult.accountName && (
+                <span>
+                  Detected account: {uploadResult.accountName}
+                  {uploadResult.accountType ? ` (${uploadResult.accountType})` : ""}
+                </span>
               )}
               {uploadResult.invalidRows.length > 0 && (
                 <>
@@ -1220,6 +1214,16 @@ function App() {
               recurringCandidates={recurringCandidates}
             />
           </>
+        )}
+
+        {activeSection === "accounts" && (
+          <AccountsSection
+            insightsMonth={insightsMonth}
+            setInsightsMonth={setInsightsMonth}
+            loadBalanceSheet={loadBalanceSheet}
+            isLoadingBalanceSheet={isLoadingBalanceSheet}
+            balanceSheet={balanceSheet}
+          />
         )}
 
         {error && <p className="error">{error}</p>}
