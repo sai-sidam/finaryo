@@ -19,12 +19,15 @@ import type {
 } from "./types";
 import { buildCalendarDays, formatCurrency, monthStartDate, toMonthKey } from "./utils";
 import InsightsSection from "./components/InsightsSection";
+import DebtSection from "./components/DebtSection";
 import PayslipSection from "./components/PayslipSection";
 import PaydaySection from "./components/PaydaySection";
 import RulesSection from "./components/RulesSection";
+import SavingsSection from "./components/SavingsSection";
 import TransactionsSection from "./components/TransactionsSection";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+type AppSection = "dashboard" | "transactions" | "cashflow" | "debts" | "savings" | "insights";
 
 function App() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -99,6 +102,7 @@ function App() {
   const [isUploadingPayslip, setIsUploadingPayslip] = useState(false);
   const [payslips, setPayslips] = useState<PayslipDocument[]>([]);
   const [isLoadingPayslips, setIsLoadingPayslips] = useState(false);
+  const [activeSection, setActiveSection] = useState<AppSection>("dashboard");
   const [error, setError] = useState<string | null>(null);
 
   const total = useMemo(() => expenses.reduce((sum, expense) => sum + expense.amount, 0), [expenses]);
@@ -756,13 +760,45 @@ function App() {
     }
   }
 
-  return (
-    <main className="page">
-      <section className="panel">
-        <h1>Finaryo Expense Tracker</h1>
-        <p className="subtitle">Track expenses and save them to the backend API.</p>
+  const navItems: Array<{ id: AppSection; label: string }> = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "transactions", label: "Transactions" },
+    { id: "cashflow", label: "Paydays & Payslips" },
+    { id: "debts", label: "Debts & Loans" },
+    { id: "savings", label: "Savings" },
+    { id: "insights", label: "Insights & Rules" },
+  ];
+  const activeSectionLabel = navItems.find((item) => item.id === activeSection)?.label ?? "Workspace";
 
-        <section className="plaid-panel">
+  return (
+    <main className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
+      <aside className="app-sidebar" aria-label="Primary navigation">
+        <h1 className="app-title">Finaryo</h1>
+        <nav className="app-nav">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`app-nav-item ${activeSection === item.id ? "app-nav-item-active" : ""}`}
+              onClick={() => setActiveSection(item.id)}
+              aria-current={activeSection === item.id ? "page" : undefined}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <section id="main-content" className="panel" tabIndex={-1}>
+        <h2 className="section-title">{activeSectionLabel}</h2>
+        <p className="subtitle">Personal finance workspace</p>
+
+        {activeSection === "dashboard" && (
+          <>
+            <section className="plaid-panel">
           <h2>Plaid Sandbox Setup</h2>
           <p>Connect your sandbox bank and sync transactions securely via backend-only Plaid credentials.</p>
           <div className="plaid-actions">
@@ -789,9 +825,9 @@ function App() {
               <span>Removed: {plaidSummary.removedCount}</span>
             </div>
           )}
-        </section>
+            </section>
 
-        <section className="upload-panel">
+            <section className="upload-panel">
           <h2>Statement Upload (Temporary Bank Input)</h2>
           <p>Upload a .xlsx, .xls, or .csv file to import transactions while Plaid is optional.</p>
           <form className="upload-form" onSubmit={handleStatementUpload}>
@@ -832,9 +868,9 @@ function App() {
               ))}
             </ul>
           )}
-        </section>
+            </section>
 
-        <form className="expense-form" onSubmit={handleSubmit}>
+            <form className="expense-form" onSubmit={handleSubmit}>
           <label>
             Name
             <input
@@ -874,347 +910,187 @@ function App() {
           <button type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Saving..." : "Add expense"}
           </button>
-        </form>
+            </form>
+
+            <div className="summary">
+              <span>Total expenses</span>
+              <strong>{formatCurrency(total)}</strong>
+            </div>
+
+            {isLoading ? (
+              <p>Loading expenses...</p>
+            ) : expenses.length === 0 ? (
+              <p>No expenses yet. Add your first one above.</p>
+            ) : (
+              <ul className="expense-list">
+                {expenses.map((expense) => (
+                  <li key={expense.id} className="expense-item">
+                    <div>
+                      <strong>{expense.name}</strong>
+                      <small>
+                        {new Date(expense.createdAt).toLocaleString()} - {expense.category}
+                      </small>
+                    </div>
+                    <span>{formatCurrency(expense.amount)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+
+        {activeSection === "transactions" && (
+          <TransactionsSection
+            searchText={searchText}
+            setSearchText={setSearchText}
+            filterCategory={filterCategory}
+            setFilterCategory={setFilterCategory}
+            minAmount={minAmount}
+            setMinAmount={setMinAmount}
+            maxAmount={maxAmount}
+            setMaxAmount={setMaxAmount}
+            loadTransactions={loadTransactions}
+            editingTransaction={editingTransaction}
+            setEditingTransaction={setEditingTransaction}
+            handleUpdateTransaction={handleUpdateTransaction}
+            isLoadingTransactions={isLoadingTransactions}
+            transactions={transactions}
+            handleDeleteTransaction={handleDeleteTransaction}
+          />
+        )}
+
+        {activeSection === "cashflow" && (
+          <>
+            <PaydaySection
+              activeMonth={activeMonth}
+              setActiveMonth={setActiveMonth}
+              loadPaydays={loadPaydays}
+              calendarCells={calendarCells}
+              selectedPaydayDate={selectedPaydayDate}
+              setSelectedPaydayDate={setSelectedPaydayDate}
+              paydaySet={paydaySet}
+              paydays={paydays}
+              editingPaydayId={editingPaydayId}
+              setEditingPaydayId={setEditingPaydayId}
+              paydayAmount={paydayAmount}
+              setPaydayAmount={setPaydayAmount}
+              paydayNote={paydayNote}
+              setPaydayNote={setPaydayNote}
+              paydayRecurrence={paydayRecurrence}
+              setPaydayRecurrence={setPaydayRecurrence}
+              handlePaydaySubmit={handlePaydaySubmit}
+              isLoadingPaydays={isLoadingPaydays}
+              handleDeletePayday={handleDeletePayday}
+            />
+
+            <PayslipSection
+              API_BASE_URL={API_BASE_URL}
+              payslipFile={payslipFile}
+              setPayslipFile={setPayslipFile}
+              isUploadingPayslip={isUploadingPayslip}
+              handleUploadPayslip={handleUploadPayslip}
+              isLoadingPayslips={isLoadingPayslips}
+              payslips={payslips}
+            />
+          </>
+        )}
+
+        {activeSection === "debts" && (
+          <DebtSection
+            debtName={debtName}
+            setDebtName={setDebtName}
+            debtLender={debtLender}
+            setDebtLender={setDebtLender}
+            debtBalance={debtBalance}
+            setDebtBalance={setDebtBalance}
+            debtApr={debtApr}
+            setDebtApr={setDebtApr}
+            debtMinimumPayment={debtMinimumPayment}
+            setDebtMinimumPayment={setDebtMinimumPayment}
+            debtDueDay={debtDueDay}
+            setDebtDueDay={setDebtDueDay}
+            editingDebtId={editingDebtId}
+            setEditingDebtId={setEditingDebtId}
+            handleDebtSubmit={handleDebtSubmit}
+            isLoadingDebts={isLoadingDebts}
+            debts={debts}
+            handleDeleteDebt={handleDeleteDebt}
+            projectionStrategy={projectionStrategy}
+            setProjectionStrategy={setProjectionStrategy}
+            projectionBudget={projectionBudget}
+            setProjectionBudget={setProjectionBudget}
+            loadDebtProjection={loadDebtProjection}
+            isLoadingProjection={isLoadingProjection}
+            projection={projection}
+            loanDirection={loanDirection}
+            setLoanDirection={setLoanDirection}
+            loanCounterparty={loanCounterparty}
+            setLoanCounterparty={setLoanCounterparty}
+            loanPrincipal={loanPrincipal}
+            setLoanPrincipal={setLoanPrincipal}
+            loanDueDate={loanDueDate}
+            setLoanDueDate={setLoanDueDate}
+            loanStatus={loanStatus}
+            setLoanStatus={setLoanStatus}
+            loanNote={loanNote}
+            setLoanNote={setLoanNote}
+            editingLoanId={editingLoanId}
+            setEditingLoanId={setEditingLoanId}
+            handleHandLoanSubmit={handleHandLoanSubmit}
+            isLoadingHandLoans={isLoadingHandLoans}
+            handLoans={handLoans}
+            handleDeleteHandLoan={handleDeleteHandLoan}
+          />
+        )}
+
+        {activeSection === "savings" && (
+          <SavingsSection
+            goalName={goalName}
+            setGoalName={setGoalName}
+            goalTargetAmount={goalTargetAmount}
+            setGoalTargetAmount={setGoalTargetAmount}
+            goalTargetDate={goalTargetDate}
+            setGoalTargetDate={setGoalTargetDate}
+            goalAutoContributePayday={goalAutoContributePayday}
+            setGoalAutoContributePayday={setGoalAutoContributePayday}
+            goalAutoContributePercent={goalAutoContributePercent}
+            setGoalAutoContributePercent={setGoalAutoContributePercent}
+            handleCreateSavingsGoal={handleCreateSavingsGoal}
+            isLoadingSavingsGoals={isLoadingSavingsGoals}
+            savingsGoals={savingsGoals}
+            goalContributionAmount={goalContributionAmount}
+            setGoalContributionAmount={setGoalContributionAmount}
+            handleAddSavingsContribution={handleAddSavingsContribution}
+          />
+        )}
+
+        {activeSection === "insights" && (
+          <>
+            <InsightsSection
+              insightsMonth={insightsMonth}
+              setInsightsMonth={setInsightsMonth}
+              loadMonthlyInsights={loadMonthlyInsights}
+              isLoadingInsights={isLoadingInsights}
+              insights={insights}
+            />
+
+            <RulesSection
+              ruleKeyword={ruleKeyword}
+              setRuleKeyword={setRuleKeyword}
+              ruleCategory={ruleCategory}
+              setRuleCategory={setRuleCategory}
+              handleCreateRule={handleCreateRule}
+              isLoadingRules={isLoadingRules}
+              rules={rules}
+              handleDeleteRule={handleDeleteRule}
+              loadRecurringCandidates={loadRecurringCandidates}
+              isLoadingRecurring={isLoadingRecurring}
+              recurringCandidates={recurringCandidates}
+            />
+          </>
+        )}
 
         {error && <p className="error">{error}</p>}
-
-        <div className="summary">
-          <span>Total expenses</span>
-          <strong>{formatCurrency(total)}</strong>
-        </div>
-
-        <PaydaySection
-          activeMonth={activeMonth}
-          setActiveMonth={setActiveMonth}
-          loadPaydays={loadPaydays}
-          calendarCells={calendarCells}
-          selectedPaydayDate={selectedPaydayDate}
-          setSelectedPaydayDate={setSelectedPaydayDate}
-          paydaySet={paydaySet}
-          paydays={paydays}
-          editingPaydayId={editingPaydayId}
-          setEditingPaydayId={setEditingPaydayId}
-          paydayAmount={paydayAmount}
-          setPaydayAmount={setPaydayAmount}
-          paydayNote={paydayNote}
-          setPaydayNote={setPaydayNote}
-          paydayRecurrence={paydayRecurrence}
-          setPaydayRecurrence={setPaydayRecurrence}
-          handlePaydaySubmit={handlePaydaySubmit}
-          isLoadingPaydays={isLoadingPaydays}
-          handleDeletePayday={handleDeletePayday}
-        />
-
-        <TransactionsSection
-          searchText={searchText}
-          setSearchText={setSearchText}
-          filterCategory={filterCategory}
-          setFilterCategory={setFilterCategory}
-          minAmount={minAmount}
-          setMinAmount={setMinAmount}
-          maxAmount={maxAmount}
-          setMaxAmount={setMaxAmount}
-          loadTransactions={loadTransactions}
-          editingTransaction={editingTransaction}
-          setEditingTransaction={setEditingTransaction}
-          handleUpdateTransaction={handleUpdateTransaction}
-          isLoadingTransactions={isLoadingTransactions}
-          transactions={transactions}
-          handleDeleteTransaction={handleDeleteTransaction}
-        />
-
-        <section className="debt-panel">
-          <h2>Debt Accounts & Hand Loans</h2>
-          <p>Track balances, APR, and payoff strategy for debts plus personal loans.</p>
-          <form className="debt-form" onSubmit={handleDebtSubmit}>
-            <input type="text" value={debtName} onChange={(event) => setDebtName(event.target.value)} placeholder="Debt name" required />
-            <input type="text" value={debtLender} onChange={(event) => setDebtLender(event.target.value)} placeholder="Lender (optional)" />
-            <input type="number" value={debtBalance} onChange={(event) => setDebtBalance(event.target.value)} placeholder="Balance" min="0.01" step="0.01" required />
-            <input type="number" value={debtApr} onChange={(event) => setDebtApr(event.target.value)} placeholder="APR %" min="0" max="100" step="0.01" required />
-            <input
-              type="number"
-              value={debtMinimumPayment}
-              onChange={(event) => setDebtMinimumPayment(event.target.value)}
-              placeholder="Minimum payment"
-              min="0.01"
-              step="0.01"
-              required
-            />
-            <input type="number" value={debtDueDay} onChange={(event) => setDebtDueDay(event.target.value)} placeholder="Due day (1-31)" min="1" max="31" required />
-            <button type="submit">{editingDebtId ? "Update Debt" : "Add Debt"}</button>
-          </form>
-
-          {isLoadingDebts ? (
-            <p>Loading debt accounts...</p>
-          ) : debts.length === 0 ? (
-            <p>No debt accounts yet.</p>
-          ) : (
-            <ul className="debt-list">
-              {debts.map((debt) => (
-                <li key={debt.id} className="debt-item">
-                  <div>
-                    <strong>{debt.name}</strong>
-                    <small>
-                      APR {debt.apr}% - Min {formatCurrency(debt.minimumPayment)} - Due day {debt.dueDay}
-                    </small>
-                  </div>
-                  <div className="debt-item-actions">
-                    <span>{formatCurrency(debt.balance)}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingDebtId(debt.id);
-                        setDebtName(debt.name);
-                        setDebtLender(debt.lender ?? "");
-                        setDebtBalance(String(debt.balance));
-                        setDebtApr(String(debt.apr));
-                        setDebtMinimumPayment(String(debt.minimumPayment));
-                        setDebtDueDay(String(debt.dueDay));
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button type="button" onClick={() => void handleDeleteDebt(debt.id)}>
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <div className="projection-controls">
-            <select
-              value={projectionStrategy}
-              onChange={(event) => {
-                setProjectionStrategy(event.target.value as "avalanche" | "snowball");
-              }}
-            >
-              <option value="avalanche">Avalanche</option>
-              <option value="snowball">Snowball</option>
-            </select>
-            <input
-              type="number"
-              value={projectionBudget}
-              onChange={(event) => setProjectionBudget(event.target.value)}
-              placeholder="Optional monthly budget"
-              min="0.01"
-              step="0.01"
-            />
-            <button type="button" onClick={() => void loadDebtProjection()}>
-              Refresh Projection
-            </button>
-          </div>
-          {isLoadingProjection ? (
-            <p>Calculating projection...</p>
-          ) : projection ? (
-            <div className="projection-summary">
-              <strong>{projection.strategy} payoff projection</strong>
-              <span>Debts: {projection.debtCount}</span>
-              <span>Monthly budget: {formatCurrency(projection.monthlyBudget)}</span>
-              <span>Months to payoff: {projection.monthsToPayoff}</span>
-              <span>Estimated interest: {formatCurrency(projection.estimatedInterest)}</span>
-              {projection.payoffOrderNames.length > 0 && (
-                <span>Payoff order: {projection.payoffOrderNames.join(" -> ")}</span>
-              )}
-            </div>
-          ) : null}
-
-          <form className="hand-loan-form" onSubmit={handleHandLoanSubmit}>
-            <select value={loanDirection} onChange={(event) => setLoanDirection(event.target.value as "borrowed" | "lent")}>
-              <option value="borrowed">Borrowed</option>
-              <option value="lent">Lent</option>
-            </select>
-            <input
-              type="text"
-              value={loanCounterparty}
-              onChange={(event) => setLoanCounterparty(event.target.value)}
-              placeholder="Counterparty"
-              required
-            />
-            <input
-              type="number"
-              value={loanPrincipal}
-              onChange={(event) => setLoanPrincipal(event.target.value)}
-              placeholder="Principal"
-              min="0.01"
-              step="0.01"
-              required
-            />
-            <input type="date" value={loanDueDate} onChange={(event) => setLoanDueDate(event.target.value)} />
-            <select value={loanStatus} onChange={(event) => setLoanStatus(event.target.value as "active" | "paid")}>
-              <option value="active">Active</option>
-              <option value="paid">Paid</option>
-            </select>
-            <input type="text" value={loanNote} onChange={(event) => setLoanNote(event.target.value)} placeholder="Note (optional)" />
-            <button type="submit">{editingLoanId ? "Update Hand Loan" : "Add Hand Loan"}</button>
-          </form>
-
-          {isLoadingHandLoans ? (
-            <p>Loading hand loans...</p>
-          ) : handLoans.length === 0 ? (
-            <p>No hand loans yet.</p>
-          ) : (
-            <ul className="debt-list">
-              {handLoans.map((loan) => (
-                <li key={loan.id} className="debt-item">
-                  <div>
-                    <strong>
-                      {loan.direction} - {loan.counterparty}
-                    </strong>
-                    <small>
-                      {loan.status}
-                      {loan.dueDate ? ` - Due ${new Date(loan.dueDate).toLocaleDateString()}` : ""}
-                      {loan.note ? ` - ${loan.note}` : ""}
-                    </small>
-                  </div>
-                  <div className="debt-item-actions">
-                    <span>{formatCurrency(loan.principal)}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingLoanId(loan.id);
-                        setLoanDirection(loan.direction);
-                        setLoanCounterparty(loan.counterparty);
-                        setLoanPrincipal(String(loan.principal));
-                        setLoanDueDate(loan.dueDate ? loan.dueDate.slice(0, 10) : "");
-                        setLoanStatus(loan.status);
-                        setLoanNote(loan.note ?? "");
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button type="button" onClick={() => void handleDeleteHandLoan(loan.id)}>
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section className="savings-panel">
-          <h2>Savings Goals</h2>
-          <p>Create goals, track progress, and add contributions.</p>
-          <form className="savings-form" onSubmit={handleCreateSavingsGoal}>
-            <input type="text" value={goalName} onChange={(event) => setGoalName(event.target.value)} placeholder="Goal name" required />
-            <input
-              type="number"
-              value={goalTargetAmount}
-              onChange={(event) => setGoalTargetAmount(event.target.value)}
-              placeholder="Target amount"
-              min="0.01"
-              step="0.01"
-              required
-            />
-            <input type="date" value={goalTargetDate} onChange={(event) => setGoalTargetDate(event.target.value)} />
-            <label className="checkbox-line">
-              <input
-                type="checkbox"
-                checked={goalAutoContributePayday}
-                onChange={(event) => setGoalAutoContributePayday(event.target.checked)}
-              />
-              Auto-contribute from payday
-            </label>
-            <input
-              type="number"
-              value={goalAutoContributePercent}
-              onChange={(event) => setGoalAutoContributePercent(event.target.value)}
-              placeholder="Auto contribution %"
-              min="0"
-              max="100"
-              step="0.01"
-            />
-            <button type="submit">Create Savings Goal</button>
-          </form>
-          {isLoadingSavingsGoals ? (
-            <p>Loading savings goals...</p>
-          ) : savingsGoals.length === 0 ? (
-            <p>No savings goals yet.</p>
-          ) : (
-            <ul className="savings-list">
-              {savingsGoals.map((goal) => (
-                <li key={goal.id} className="savings-item">
-                  <div>
-                    <strong>{goal.name}</strong>
-                    <small>
-                      Saved {formatCurrency(goal.savedAmount)} / {formatCurrency(goal.targetAmount)} | Remaining{" "}
-                      {formatCurrency(goal.remainingAmount)}
-                    </small>
-                  </div>
-                  <div className="savings-actions">
-                    <input
-                      type="number"
-                      value={goalContributionAmount[goal.id] ?? ""}
-                      onChange={(event) =>
-                        setGoalContributionAmount((current) => ({ ...current, [goal.id]: event.target.value }))
-                      }
-                      placeholder="Contribution"
-                      min="0.01"
-                      step="0.01"
-                    />
-                    <button type="button" onClick={() => void handleAddSavingsContribution(goal.id)}>
-                      Add
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <InsightsSection
-          insightsMonth={insightsMonth}
-          setInsightsMonth={setInsightsMonth}
-          loadMonthlyInsights={loadMonthlyInsights}
-          isLoadingInsights={isLoadingInsights}
-          insights={insights}
-        />
-
-        <RulesSection
-          ruleKeyword={ruleKeyword}
-          setRuleKeyword={setRuleKeyword}
-          ruleCategory={ruleCategory}
-          setRuleCategory={setRuleCategory}
-          handleCreateRule={handleCreateRule}
-          isLoadingRules={isLoadingRules}
-          rules={rules}
-          handleDeleteRule={handleDeleteRule}
-          loadRecurringCandidates={loadRecurringCandidates}
-          isLoadingRecurring={isLoadingRecurring}
-          recurringCandidates={recurringCandidates}
-        />
-
-        <PayslipSection
-          API_BASE_URL={API_BASE_URL}
-          payslipFile={payslipFile}
-          setPayslipFile={setPayslipFile}
-          isUploadingPayslip={isUploadingPayslip}
-          handleUploadPayslip={handleUploadPayslip}
-          isLoadingPayslips={isLoadingPayslips}
-          payslips={payslips}
-        />
-
-        {isLoading ? (
-          <p>Loading expenses...</p>
-        ) : expenses.length === 0 ? (
-          <p>No expenses yet. Add your first one above.</p>
-        ) : (
-          <ul className="expense-list">
-            {expenses.map((expense) => (
-              <li key={expense.id} className="expense-item">
-                <div>
-                  <strong>{expense.name}</strong>
-                  <small>
-                    {new Date(expense.createdAt).toLocaleString()} - {expense.category}
-                  </small>
-                </div>
-                <span>{formatCurrency(expense.amount)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
     </main>
   );

@@ -1,6 +1,8 @@
 import type { FormEvent } from "react";
 import type { CategorizationRule, RecurringCandidate } from "../types";
 import { formatCurrency } from "../utils";
+import EmptyState from "./ui/EmptyState";
+import SectionHeader from "./ui/SectionHeader";
 
 type RulesSectionProps = {
   ruleKeyword: string;
@@ -31,7 +33,7 @@ function RulesSection({
 }: RulesSectionProps) {
   return (
     <section className="rules-panel">
-      <h2>Auto-Categorization & Recurring</h2>
+      <SectionHeader title="Auto-Categorization & Recurring" />
       <form className="rules-form" onSubmit={(event) => void handleCreateRule(event)}>
         <input
           type="text"
@@ -52,7 +54,7 @@ function RulesSection({
       {isLoadingRules ? (
         <p>Loading rules...</p>
       ) : rules.length === 0 ? (
-        <p>No categorization rules yet.</p>
+        <EmptyState message="No categorization rules yet." />
       ) : (
         <ul className="rules-list">
           {rules.map((rule) => (
@@ -73,7 +75,7 @@ function RulesSection({
       {isLoadingRecurring ? (
         <p>Detecting recurring transactions...</p>
       ) : recurringCandidates.length === 0 ? (
-        <p>No recurring candidates detected yet.</p>
+        <EmptyState message="No recurring candidates detected yet." />
       ) : (
         <ul className="rules-list">
           {recurringCandidates.map((candidate) => (
