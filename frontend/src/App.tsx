@@ -360,6 +360,11 @@ function App() {
     void loadReviewTransactions();
   }, []);
 
+  useEffect(() => {
+    void loadMonthlyInsights();
+    void loadBalanceSheet();
+  }, [insightsMonth]);
+
   const { open: openPlaid, ready: isPlaidReady } = usePlaidLink({
     token: plaidLinkToken,
     onSuccess: async (publicToken) => {
@@ -436,6 +441,14 @@ function App() {
       }
       setPlaidSummary(payload.data);
       setIsPlaidConnected(true);
+      await Promise.all([
+        loadTransactions(),
+        loadReviewTransactions(),
+        loadMonthlyInsights(),
+        loadBalanceSheet(),
+        loadDebts(),
+        loadDebtProjection(),
+      ]);
     } catch (syncError) {
       setError(syncError instanceof Error ? syncError.message : "Plaid transaction sync failed.");
     } finally {
@@ -483,6 +496,7 @@ function App() {
     }
 
     setError(null);
+    setUploadResult(null);
     setIsUploadingStatement(true);
     try {
       const formData = new FormData();
@@ -518,7 +532,7 @@ function App() {
         const payload = (await response.json()) as { error?: string };
         throw new Error(payload.error ?? "Unable to delete transaction.");
       }
-      await Promise.all([loadExpenses(), loadTransactions()]);
+      await Promise.all([loadExpenses(), loadTransactions(), loadReviewTransactions(), loadMonthlyInsights(), loadBalanceSheet()]);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Unable to delete transaction.");
     }
@@ -552,7 +566,13 @@ function App() {
         throw new Error(payload.error ?? "Unable to update transaction.");
       }
       setEditingTransaction(null);
-      await Promise.all([loadExpenses(), loadTransactions(), loadReviewTransactions()]);
+      await Promise.all([
+        loadExpenses(),
+        loadTransactions(),
+        loadReviewTransactions(),
+        loadMonthlyInsights(),
+        loadBalanceSheet(),
+      ]);
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update transaction.");
     }
@@ -831,7 +851,12 @@ function App() {
       if (!response.ok) {
         throw new Error(payload.error ?? "Unable to resolve transaction categorization.");
       }
-      await Promise.all([loadTransactions(), loadReviewTransactions()]);
+      await Promise.all([
+        loadTransactions(),
+        loadReviewTransactions(),
+        loadMonthlyInsights(),
+        loadBalanceSheet(),
+      ]);
     } catch (resolveError) {
       setError(
         resolveError instanceof Error

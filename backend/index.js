@@ -281,6 +281,53 @@ function buildTransactionFingerprint({ date, description, amount, accountName, a
   return `${dayKey}|${normalizedAmount}|${normalizedDescription}|${normalizedAccount}`;
 }
 
+async function reconcileDebtAccountsFromCreditCardImports(userId) {
+  const creditCardRows = await prisma.importedTransaction.findMany({
+    where: { userId, accountType: "credit_card" },
+    orderBy: { date: "asc" },
+  });
+  const byAccount = new Map();
+  for (const row of creditCardRows) {
+    const key = row.accountName || "Credit Card";
+    if (!byAccount.has(key)) {
+      byAccount.set(key, { netFlow: 0 });
+    }
+    byAccount.get(key).netFlow += row.amount;
+  }
+
+  for (const [accountName, summary] of byAccount.entries()) {
+    const estimatedBalance = Math.max(0, Number((-summary.netFlow).toFixed(2)));
+    const minimumPayment = estimatedBalance > 0 ? Math.max(25, Number((estimatedBalance * 0.03).toFixed(2))) : 25;
+    const lender = accountName.split(" ")[0] || "Card Issuer";
+
+    const existing = await prisma.debtAccount.findFirst({
+      where: { userId, name: accountName },
+    });
+    if (existing) {
+      await prisma.debtAccount.update({
+        where: { id: existing.id },
+        data: {
+          balance: estimatedBalance,
+          minimumPayment: Number(minimumPayment.toFixed(2)),
+          lender: existing.lender || lender,
+        },
+      });
+    } else {
+      await prisma.debtAccount.create({
+        data: {
+          userId,
+          name: accountName,
+          lender,
+          balance: estimatedBalance,
+          apr: 0,
+          minimumPayment: Number(minimumPayment.toFixed(2)),
+          dueDay: 1,
+        },
+      });
+    }
+  }
+}
+
 async function classifyCategoryWithGemini({ description, amount }) {
   if (!runtimeConfig.GEMINI_API_KEY) {
     return null;
@@ -375,7 +422,7 @@ function findColumnIndex(normalizedHeaders, aliases) {
 function inferAccountTypeFromText(text) {
   const normalized = text.toLowerCase();
   if (
-    /(credit card|card statement|visa|mastercard|amex|american express|discover|statement period|minimum due|total due|payment due date|available credit|credit limit)/i.test(
+    /(credit card|card statement|card no\.?|card number|card ending|visa|mastercard|amex|american express|discover|statement period|minimum due|total due|payment due date|available credit|credit limit|interest charged on purchases|interest charge:?purchases)/i.test(
       normalized,
     )
   ) {
@@ -471,7 +518,8 @@ function inferAccountMetadata({ fileName, sheetName, rows, headerRowIndex }) {
   const accountNumberText = cellTexts.find((text) =>
     /(account number|a\/?c number|acct number|ending|xxxx|x{2,})/i.test(text),
   );
-  const endingMatch = accountNumberText?.match(/(\d{3,6})\s*$/) ?? null;
+  const hasMaskedPattern = /(x{2,}\d{2,6}|\*{2,}\d{2,6}|ending\s+\d{2,6})/i.test(accountNumberText ?? "");
+  const endingMatch = hasMaskedPattern ? accountNumberText?.match(/(\d{2,6})\s*$/) ?? null : null;
   const endingDigits = endingMatch?.[1] ?? null;
 
   if (!accountName) {
@@ -519,6 +567,24 @@ function isLikelyNoiseRow(description, amount, date, row) {
     return true;
   }
   return false;
+}
+
+function inferAccountTypeFromTransactionCorpus({ statementFileName, descriptions, fallbackType }) {
+  const text = `${statementFileName ?? ""} ${descriptions.join(" ")}`.toLowerCase();
+  if (
+    /(payment from chk|interest charged|cash advance|credit card|card no|card ending|minimum due|available credit|total due)/i.test(
+      text,
+    )
+  ) {
+    return "credit_card";
+  }
+  if (/(loan|emi|installment|mortgage)/i.test(text)) {
+    return "loan";
+  }
+  if (/(savings|saving account)/i.test(text)) {
+    return "savings";
+  }
+  return fallbackType || "checking";
 }
 
 function detectStatementHeader(rows) {
@@ -1430,6 +1496,68 @@ app.post("/api/transactions/reclassify-existing", async (req, res, next) => {
         updatedCount,
         autoAssignedCount,
         needsReviewCount,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post("/api/transactions/reinfer-accounts", async (_req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const imports = await prisma.importedTransaction.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        statementFileName: true,
+        description: true,
+        accountName: true,
+        accountType: true,
+      },
+    });
+    const byStatement = new Map();
+    for (const row of imports) {
+      const key = row.statementFileName || "statement";
+      if (!byStatement.has(key)) {
+        byStatement.set(key, []);
+      }
+      byStatement.get(key).push(row);
+    }
+
+    let updatedCount = 0;
+    for (const [statementFileName, rows] of byStatement.entries()) {
+      const descriptions = rows.map((row) => row.description).filter(Boolean);
+      const inferredType = inferAccountTypeFromTransactionCorpus({
+        statementFileName,
+        descriptions,
+        fallbackType: rows[0]?.accountType ?? "checking",
+      });
+      const bankName = inferBankNameFromText(`${statementFileName} ${descriptions.join(" ")}`);
+      const endingMatch = statementFileName.match(/(\d{3,6})(?=\.[a-z]+$|$)/i) ?? null;
+      const endingDigits = endingMatch?.[1] ?? null;
+      const inferredName = buildStableAccountLabel({
+        bankName,
+        accountType: inferredType,
+        endingDigits,
+      });
+      const ids = rows.map((row) => row.id);
+      const updateResult = await prisma.importedTransaction.updateMany({
+        where: { userId, id: { in: ids } },
+        data: {
+          accountType: inferredType,
+          accountName: inferredName,
+        },
+      });
+      updatedCount += updateResult.count;
+    }
+    await reconcileDebtAccountsFromCreditCardImports(userId);
+
+    return res.json({
+      data: {
+        statementGroups: byStatement.size,
+        updatedCount,
       },
     });
   } catch (error) {
@@ -2463,6 +2591,7 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
         duplicateCount,
       },
     });
+    await reconcileDebtAccountsFromCreditCardImports(userId);
     const autoCategorizedCount = savedTransactions.filter(
       (transaction) => transaction.categorizationStatus === "auto_assigned",
     ).length;
