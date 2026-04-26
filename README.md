@@ -1,15 +1,25 @@
-# Finaryo Monolith (Single Server)
+# Finaryo
 
-This repository now runs as one monolith app:
+Finaryo is a single-machine personal finance app with:
 
-- `frontend/` is built with Vite
-- `backend/` (Express) serves both API routes and the built frontend files
+- expense + transaction tracking
+- statement upload (`.xlsx`, `.xls`, `.csv`)
+- payday calendar + recurring payday entries
+- debt + hand-loan tracking
+- avalanche/snowball payoff projection
+- savings goals + contributions + payday auto-contributions
+- monthly insights
+- categorization rules + recurring transaction detection
+- payslip PDF upload and retrieval
 
-You can run everything from the repository root.
+The app is a monolith:
+
+- `frontend/` (Vite + React)
+- `backend/` (Express + Prisma + SQLite) serving APIs and built frontend
 
 ## Prerequisites
 
-- Node.js 18+ (Node.js 20+ recommended)
+- Node.js 20+
 - npm
 
 ## First-time setup
@@ -19,49 +29,61 @@ cp backend/.env.example backend/.env
 npm run install:all
 ```
 
-Populate Plaid sandbox credentials in `backend/.env` before starting the app.
+Then open `backend/.env` and set:
 
-## Run as a single app (one command)
+- `PLAID_CLIENT_ID`
+- `PLAID_SECRET`
+- `APP_ENCRYPTION_KEY` (32+ chars)
+
+## Start the app
 
 ```bash
 npm run start:monolith
 ```
 
-What this does:
+App URL: `http://localhost:3001`
 
-1. Builds the frontend (`frontend/dist`)
-2. Starts the backend server
-3. Serves UI and API from the same server/port
+## Development
 
-Default URL: `http://localhost:3001`
+- Frontend dev server: `npm run dev:frontend`
+- Backend server: `npm run dev:backend`
+- Prisma migration: `npm run prisma:migrate --prefix backend`
+- Prisma Studio: `npm run prisma:studio --prefix backend`
 
-## Development notes
+## Validation
 
-- If you want frontend hot-reload while developing UI:
-  - `npm run dev:frontend` (Vite dev server)
-  - `npm run dev:backend` (Express API)
-- For production-like local testing, prefer `npm run start:monolith`.
+### 1) Frontend build
 
-## API Endpoints
+```bash
+npm run build --prefix frontend
+```
 
-- `GET /api/health` health check
-- `GET /api/expenses` list expenses
-- `POST /api/expenses` create expense
-- `POST /api/plaid/link-token/create` create Plaid Link token
-- `POST /api/plaid/public-token/exchange` exchange public token for access token
-- `POST /api/plaid/transactions/sync` sync transactions for the connected Item
+### 2) Backend smoke test
 
-### Create expense request body
+Start backend first (must include required env values), then:
 
-```json
-{
-  "name": "Groceries",
-  "amount": 42.5
-}
+```bash
+npm run smoke --prefix backend
+```
+
+## Data safety (SQLite)
+
+DB file: `backend/prisma/dev.db`
+
+### Create backup
+
+```bash
+npm run db:backup --prefix backend
+```
+
+### Restore backup
+
+```bash
+npm run db:restore --prefix backend -- ./backups/<backup-file>.db
 ```
 
 ## Notes
 
-- Expenses are currently stored in memory (non-persistent).
-- Do not commit local `.env` files.
-- Plaid tokens are encrypted in memory for MVP and should move to encrypted persistent storage before production use.
+- For local solo use, data is persistent in SQLite.
+- Do not commit `backend/.env`.
+- Payslips are stored locally under `backend/uploads/payslips`.

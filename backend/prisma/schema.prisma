@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String                @id @default(cuid())
+  externalId           String                @unique
+  email                String                @unique
+  displayName          String
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  expenses             Expense[]
+  importedTransactions ImportedTransaction[]
+  paydayEvents         PaydayEvent[]
+  debtAccounts         DebtAccount[]
+  handLoans            HandLoan[]
+  categorizationRules  CategorizationRule[]
+  payslipDocuments     PayslipDocument[]
+  savingsGoals         SavingsGoal[]
+  savingsContributions SavingsContribution[]
+}
+
+model Expense {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  amount    Float
+  category  String   @default("Uncategorized")
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model ImportedTransaction {
+  id                String   @id @default(cuid())
+  userId            String
+  statementFileName String
+  date              DateTime
+  description       String
+  amount            Float
+  category          String
+  source            String
+  createdAt         DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model PaydayEvent {
+  id             String   @id @default(cuid())
+  userId         String
+  date           DateTime
+  expectedAmount Float
+  note           String?
+  recurrence     String   @default("none")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model DebtAccount {
+  id             String   @id @default(cuid())
+  userId         String
+  name           String
+  lender         String?
+  balance        Float
+  apr            Float
+  minimumPayment Float
+  dueDay         Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, dueDay])
+}
+
+model HandLoan {
+  id           String   @id @default(cuid())
+  userId       String
+  direction    String
+  counterparty String
+  principal    Float
+  dueDate      DateTime?
+  status       String   @default("active")
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model CategorizationRule {
+  id          String   @id @default(cuid())
+  userId      String
+  keyword     String
+  category    String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+}
+
+model PayslipDocument {
+  id               String   @id @default(cuid())
+  userId           String
+  fileName         String
+  storagePath      String
+  extractedPayDate DateTime?
+  extractedNetPay  Float?
+  parseStatus      String
+  parseNotes       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model SavingsGoal {
+  id                     String   @id @default(cuid())
+  userId                 String
+  name                   String
+  targetAmount           Float
+  targetDate             DateTime?
+  autoContributePayday   Boolean  @default(false)
+  autoContributePercent  Float    @default(0)
+  status                 String   @default("active")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contributions          SavingsContribution[]
+
+  @@index([userId, status])
+}
+
+model SavingsContribution {
+  id        String   @id @default(cuid())
+  userId    String
+  goalId    String
+  amount    Float
+  sourceType String
+  note      String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal      SavingsGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([userId, goalId, createdAt])
+}

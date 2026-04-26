@@ -64,6 +64,515 @@
   color: #cbd5e1;
 }
 
+.upload-panel {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.upload-panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.upload-panel p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.upload-form {
+  margin-top: 0.8rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.upload-form input[type="file"] {
+  flex: 1 1 260px;
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+}
+
+.upload-summary {
+  margin-top: 0.9rem;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.2rem;
+  color: #cbd5e1;
+}
+
+.upload-transaction-list {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.upload-transaction-item {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.upload-transaction-item div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.upload-transaction-item small {
+  color: #9ca3af;
+}
+
+.transactions-panel {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.transactions-panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.transactions-panel p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.payday-panel {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.payday-panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.payday-panel p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.calendar-header {
+  margin-top: 0.8rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.calendar-grid {
+  margin-top: 0.7rem;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.calendar-weekday {
+  font-size: 0.8rem;
+  text-align: center;
+  color: #9ca3af;
+}
+
+.calendar-day {
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 0.45rem 0;
+  background: #0f172a;
+}
+
+.calendar-day-muted {
+  opacity: 0.55;
+}
+
+.calendar-day-selected {
+  border-color: #60a5fa;
+}
+
+.calendar-day-payday {
+  background: rgba(37, 99, 235, 0.28);
+}
+
+.payday-form {
+  margin-top: 0.8rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.payday-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.payday-form input,
+.payday-form select {
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+}
+
+.payday-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.payday-list {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.payday-item {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.payday-item div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.payday-item small {
+  color: #9ca3af;
+}
+
+.payday-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.payday-item-actions button {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.transaction-filters {
+  margin-top: 0.8rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.transaction-filters input {
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+}
+
+.edit-transaction-form {
+  margin-top: 0.8rem;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.edit-transaction-form input {
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.transaction-list {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.transaction-item {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.transaction-item div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.transaction-item small {
+  color: #9ca3af;
+}
+
+.transaction-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.transaction-actions button {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.debt-panel {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.debt-panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.debt-panel p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.debt-form,
+.hand-loan-form {
+  margin-top: 0.8rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.debt-form input,
+.hand-loan-form input,
+.hand-loan-form select,
+.projection-controls input,
+.projection-controls select {
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+}
+
+.debt-form button,
+.hand-loan-form button {
+  grid-column: 1 / -1;
+}
+
+.debt-list {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.debt-item {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.debt-item div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.debt-item small {
+  color: #9ca3af;
+}
+
+.debt-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.debt-item-actions button {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.projection-controls {
+  margin-top: 0.8rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.55rem;
+}
+
+.projection-summary {
+  margin-top: 0.8rem;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.2rem;
+  color: #cbd5e1;
+}
+
+.savings-panel,
+.insights-panel,
+.rules-panel,
+.payslip-panel {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.savings-panel h2,
+.insights-panel h2,
+.rules-panel h2,
+.payslip-panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.savings-panel p,
+.insights-panel p,
+.rules-panel p,
+.payslip-panel p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.savings-form,
+.rules-form,
+.insights-controls {
+  margin-top: 0.8rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.savings-form input,
+.rules-form input,
+.insights-controls input {
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+}
+
+.checkbox-line {
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.savings-form button,
+.rules-form button,
+.insights-controls button {
+  grid-column: 1 / -1;
+}
+
+.savings-list,
+.rules-list {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.savings-item,
+.rules-item {
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.savings-item div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.savings-item small {
+  color: #9ca3af;
+}
+
+.savings-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.savings-actions input {
+  width: 130px;
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.45rem 0.55rem;
+}
+
+.insights-summary {
+  margin-top: 0.8rem;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.2rem;
+  color: #cbd5e1;
+}
+
 .expense-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -135,6 +644,23 @@
 
 @media (max-width: 600px) {
   .expense-form {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .payday-form {
+    grid-template-columns: 1fr;
+  }
+
+  .debt-form,
+  .hand-loan-form,
+  .projection-controls,
+  .savings-form,
+  .rules-form,
+  .insights-controls {
     grid-template-columns: 1fr;
   }
 }

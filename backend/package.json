@@ -5,19 +5,30 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"No backend tests configured yet\"",
-    "start": "node index.js"
+    "start": "node index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "smoke": "node scripts/smoke.mjs",
+    "db:backup": "node scripts/backup-db.mjs",
+    "db:restore": "node scripts/restore-db.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "express-rate-limit": "^8.3.2",
     "helmet": "^8.1.0",
+    "multer": "^2.1.1",
+    "pdf-parse": "^2.4.5",
     "plaid": "^41.4.0",
+    "prisma": "^6.19.3",
+    "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   }
 }
