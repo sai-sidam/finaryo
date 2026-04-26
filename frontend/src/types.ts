@@ -21,11 +21,18 @@ export type UploadedTransaction = {
   amount: number;
   category: string;
   source: string;
+  accountName?: string;
+  accountType?: string;
+  categorizationSource?: "rule" | "memory" | "ai" | "manual";
+  categorizationStatus?: "auto_assigned" | "needs_review" | "approved";
+  categorizationConfidence?: number | null;
 };
 
 export type UploadResult = {
   importedCount: number;
   skippedCount: number;
+  autoCategorizedCount?: number;
+  needsReviewCount?: number;
   transactions: UploadedTransaction[];
   invalidRows: Array<{
     rowNumber: number;
@@ -40,6 +47,11 @@ export type Transaction = {
   amount: number;
   category: string;
   date: string;
+  accountName?: string;
+  accountType?: string;
+  categorizationSource?: "rule" | "memory" | "ai" | "manual";
+  categorizationStatus?: "auto_assigned" | "needs_review" | "approved";
+  categorizationConfidence?: number | null;
 };
 
 export type PaydayEvent = {
@@ -113,6 +125,19 @@ export type MonthlyInsights = {
   incomeTotal: number;
   net: number;
   topCategories: Array<{ category: string; amount: number }>;
+};
+
+export type BalanceSheetInsights = {
+  month: string | null;
+  totalNetFlow: number;
+  accounts: Array<{
+    accountName: string;
+    accountType: string;
+    netFlow: number;
+    income: number;
+    expenses: number;
+    transfers: number;
+  }>;
 };
 
 export type RecurringCandidate = {

@@ -8,6 +8,7 @@ import type {
   DebtProjection,
   Expense,
   HandLoan,
+  BalanceSheetInsights,
   MonthlyInsights,
   PaydayEvent,
   PayslipDocument,
@@ -44,6 +45,8 @@ function App() {
   const [plaidSummary, setPlaidSummary] = useState<PlaidSyncSummary | null>(null);
   const [statementFile, setStatementFile] = useState<File | null>(null);
   const [isUploadingStatement, setIsUploadingStatement] = useState(false);
+  const [statementAccountName, setStatementAccountName] = useState("Primary Checking");
+  const [statementAccountType, setStatementAccountType] = useState("checking");
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [searchText, setSearchText] = useState("");
@@ -51,6 +54,9 @@ function App() {
   const [minAmount, setMinAmount] = useState("");
   const [maxAmount, setMaxAmount] = useState("");
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [reviewTransactions, setReviewTransactions] = useState<Transaction[]>([]);
+  const [isLoadingReviewTransactions, setIsLoadingReviewTransactions] = useState(false);
+  const [reviewCategoryEdits, setReviewCategoryEdits] = useState<Record<string, string>>({});
   const [activeMonth, setActiveMonth] = useState(() => monthStartDate(new Date()));
   const [selectedPaydayDate, setSelectedPaydayDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [paydayAmount, setPaydayAmount] = useState("");
@@ -96,6 +102,7 @@ function App() {
   const [insightsMonth, setInsightsMonth] = useState(() => toMonthKey(new Date()));
   const [insights, setInsights] = useState<MonthlyInsights | null>(null);
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [balanceSheet, setBalanceSheet] = useState<BalanceSheetInsights | null>(null);
   const [recurringCandidates, setRecurringCandidates] = useState<RecurringCandidate[]>([]);
   const [isLoadingRecurring, setIsLoadingRecurring] = useState(false);
   const [payslipFile, setPayslipFile] = useState<File | null>(null);
@@ -153,6 +160,32 @@ function App() {
       setError(loadError instanceof Error ? loadError.message : "Unexpected error while loading transactions.");
     } finally {
       setIsLoadingTransactions(false);
+    }
+  }
+
+  async function loadReviewTransactions() {
+    setIsLoadingReviewTransactions(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/transactions/review`);
+      const payload = (await response.json()) as { error?: string; data?: Transaction[] };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to load review queue.");
+      }
+      const data = Array.isArray(payload.data) ? payload.data : [];
+      setReviewTransactions(data);
+      setReviewCategoryEdits((current) => {
+        const next = { ...current };
+        for (const row of data) {
+          if (!next[row.id]) {
+            next[row.id] = row.category;
+          }
+        }
+        return next;
+      });
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unexpected error while loading review queue.");
+    } finally {
+      setIsLoadingReviewTransactions(false);
     }
   }
 
@@ -267,6 +300,19 @@ function App() {
     }
   }
 
+  async function loadBalanceSheet() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/insights/balance-sheet?month=${insightsMonth}`);
+      const payload = (await response.json()) as { error?: string; data?: BalanceSheetInsights };
+      if (!response.ok || !payload.data) {
+        throw new Error(payload.error ?? "Unable to load balance sheet.");
+      }
+      setBalanceSheet(payload.data);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load balance sheet.");
+    }
+  }
+
   async function loadRecurringCandidates() {
     setIsLoadingRecurring(true);
     try {
@@ -305,8 +351,10 @@ function App() {
     void loadCategorizationRules();
     void loadSavingsGoals();
     void loadMonthlyInsights();
+    void loadBalanceSheet();
     void loadRecurringCandidates();
     void loadPayslips();
+    void loadReviewTransactions();
   }, []);
 
   const { open: openPlaid, ready: isPlaidReady } = usePlaidLink({
@@ -436,6 +484,8 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("statement", statementFile);
+      formData.append("accountName", statementAccountName);
+      formData.append("accountType", statementAccountType);
 
       const response = await fetch(`${API_BASE_URL}/api/transactions/upload`, {
         method: "POST",
@@ -448,7 +498,7 @@ function App() {
       }
 
       setUploadResult(payload.data);
-      void loadTransactions();
+      await Promise.all([loadTransactions(), loadReviewTransactions(), loadMonthlyInsights(), loadBalanceSheet()]);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Unable to upload statement.");
     } finally {
@@ -501,7 +551,7 @@ function App() {
         throw new Error(payload.error ?? "Unable to update transaction.");
       }
       setEditingTransaction(null);
-      await Promise.all([loadExpenses(), loadTransactions()]);
+      await Promise.all([loadExpenses(), loadTransactions(), loadReviewTransactions()]);
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update transaction.");
     }
@@ -760,6 +810,36 @@ function App() {
     }
   }
 
+  async function handleResolveReviewTransaction(transactionId: string, applyToSimilar: boolean) {
+    const categoryValue = (reviewCategoryEdits[transactionId] ?? "").trim();
+    if (!categoryValue) {
+      setError("Please enter a category before resolving review.");
+      return;
+    }
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/transactions/imported/${transactionId}/categorization`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: categoryValue,
+          applyToSimilar,
+        }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to resolve transaction categorization.");
+      }
+      await Promise.all([loadTransactions(), loadReviewTransactions()]);
+    } catch (resolveError) {
+      setError(
+        resolveError instanceof Error
+          ? resolveError.message
+          : "Unable to resolve transaction categorization.",
+      );
+    }
+  }
+
   const navItems: Array<{ id: AppSection; label: string }> = [
     { id: "dashboard", label: "Dashboard" },
     { id: "transactions", label: "Transactions" },
@@ -832,6 +912,23 @@ function App() {
           <p>Upload a .xlsx, .xls, or .csv file to import transactions while Plaid is optional.</p>
           <form className="upload-form" onSubmit={handleStatementUpload}>
             <input
+              type="text"
+              value={statementAccountName}
+              onChange={(event) => setStatementAccountName(event.target.value)}
+              placeholder="Account name (e.g. Chase Checking)"
+              required
+            />
+            <select
+              value={statementAccountType}
+              onChange={(event) => setStatementAccountType(event.target.value)}
+            >
+              <option value="checking">Checking</option>
+              <option value="savings">Savings</option>
+              <option value="credit_card">Credit Card</option>
+              <option value="loan">Loan</option>
+              <option value="cash">Cash</option>
+            </select>
+            <input
               type="file"
               accept=".xlsx,.xls,.csv"
               onChange={(event) => {
@@ -848,6 +945,12 @@ function App() {
               <strong>Import summary</strong>
               <span>Imported: {uploadResult.importedCount}</span>
               <span>Skipped: {uploadResult.skippedCount}</span>
+              {typeof uploadResult.autoCategorizedCount === "number" && (
+                <span>Auto-categorized: {uploadResult.autoCategorizedCount}</span>
+              )}
+              {typeof uploadResult.needsReviewCount === "number" && (
+                <span>Needs review: {uploadResult.needsReviewCount}</span>
+              )}
               {uploadResult.invalidRows.length > 0 && (
                 <>
                   <span>Invalid rows: {uploadResult.invalidRows.map((row) => row.rowNumber).join(", ")}</span>
@@ -876,6 +979,21 @@ function App() {
                 </li>
               ))}
             </ul>
+          )}
+          {balanceSheet && balanceSheet.accounts.length > 0 && (
+            <div className="upload-summary">
+              <strong>Balance Sheet (Net Flow)</strong>
+              <span>Total net flow: {formatCurrency(balanceSheet.totalNetFlow)}</span>
+              <ul className="upload-invalid-list">
+                {balanceSheet.accounts.map((account) => (
+                  <li key={`${account.accountName}-${account.accountType}`}>
+                    {account.accountName} ({account.accountType}) | Net: {formatCurrency(account.netFlow)} | Income:{" "}
+                    {formatCurrency(account.income)} | Expenses: {formatCurrency(account.expenses)} | Transfers:{" "}
+                    {formatCurrency(account.transfers)}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
             </section>
 
@@ -965,6 +1083,11 @@ function App() {
             isLoadingTransactions={isLoadingTransactions}
             transactions={transactions}
             handleDeleteTransaction={handleDeleteTransaction}
+            reviewTransactions={reviewTransactions}
+            isLoadingReviewTransactions={isLoadingReviewTransactions}
+            reviewCategoryEdits={reviewCategoryEdits}
+            setReviewCategoryEdits={setReviewCategoryEdits}
+            handleResolveReviewTransaction={handleResolveReviewTransaction}
           />
         )}
 

@@ -68,6 +68,13 @@ const transactionUpdateSchema = z.object({
   category: z.string().trim().min(1).max(80).optional(),
   date: z.string().datetime().optional(),
 });
+const reviewTransactionParamsSchema = z.object({
+  id: z.string().min(1),
+});
+const resolveCategorizationSchema = z.object({
+  category: z.string().trim().min(1).max(80),
+  applyToSimilar: z.boolean().optional(),
+});
 const transactionParamsSchema = z.object({
   sourceType: z.enum(["expense", "imported"]),
   id: z.string().min(1),
@@ -223,6 +230,106 @@ function pickRowValue(row, keys) {
     }
   }
   return undefined;
+}
+
+const CATEGORY_WHITELIST = [
+  "Uncategorized",
+  "Food",
+  "Transport",
+  "Groceries",
+  "Shopping",
+  "Bills",
+  "Rent",
+  "Utilities",
+  "Healthcare",
+  "Entertainment",
+  "Travel",
+  "Education",
+  "Income",
+  "Transfer",
+  "Subscriptions",
+  "Insurance",
+  "Debt Payment",
+  "Savings",
+  "Cash Withdrawal",
+  "Fees",
+  "Taxes",
+  "Other",
+];
+
+function normalizeDescriptionForMemory(description) {
+  return String(description ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sanitizeCategory(category, fallbackCategory = "Uncategorized") {
+  const normalized = String(category ?? "").trim();
+  return CATEGORY_WHITELIST.includes(normalized) ? normalized : fallbackCategory;
+}
+
+async function classifyCategoryWithGemini({ description, amount }) {
+  if (!runtimeConfig.GEMINI_API_KEY) {
+    return null;
+  }
+  const model = runtimeConfig.GEMINI_MODEL || "gemini-2.0-flash-lite";
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model,
+  )}:generateContent?key=${encodeURIComponent(runtimeConfig.GEMINI_API_KEY)}`;
+  const prompt = [
+    "You categorize finance transactions.",
+    `Allowed categories: ${CATEGORY_WHITELIST.join(", ")}`,
+    `Transaction description: ${description}`,
+    `Transaction amount: ${amount}`,
+    "Return ONLY valid JSON with keys: category (string from allowed list), confidence (0 to 1).",
+  ].join("\n");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4500);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 120,
+        },
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json();
+    const text =
+      payload?.candidates?.[0]?.content?.parts
+        ?.map((part) => part?.text)
+        .filter(Boolean)
+        .join(" ")
+        ?.trim() ?? "";
+    if (!text) {
+      return null;
+    }
+    const jsonTextMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonTextMatch) {
+      return null;
+    }
+    const parsed = JSON.parse(jsonTextMatch[0]);
+    const category = sanitizeCategory(parsed?.category, "Uncategorized");
+    const confidenceRaw = Number(parsed?.confidence);
+    const confidence = Number.isFinite(confidenceRaw)
+      ? Math.min(Math.max(confidenceRaw, 0), 1)
+      : null;
+    return { category, confidence };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function normalizeHeaderKey(value) {
@@ -644,6 +751,92 @@ async function applyCategorizationRules({ userId, description, fallbackCategory 
   return match?.category ?? fallbackCategory;
 }
 
+async function resolveCategorizationDecision({ userId, description, amount, fallbackCategory }) {
+  const normalizedDescription = normalizeDescriptionForMemory(description);
+  const normalizedFallbackCategory = sanitizeCategory(fallbackCategory, "Uncategorized");
+  const amountValue = Number(amount) || 0;
+
+  // Strong deterministic income and internal-transfer guards.
+  if (
+    /(salary|payroll|direct deposit|ach credit|interest credit|employer deposit|salary credit)/i.test(
+      normalizedDescription,
+    ) &&
+    amountValue > 0
+  ) {
+    return {
+      category: "Income",
+      source: "rule",
+      status: "auto_assigned",
+      confidence: 0.99,
+      normalizedDescription,
+    };
+  }
+  if (
+    /(credit card payment|cc payment|card payment|payment thank you|autopay card|visa payment|mastercard payment)/i.test(
+      normalizedDescription,
+    )
+  ) {
+    return {
+      category: "Transfer",
+      source: "rule",
+      status: "auto_assigned",
+      confidence: 0.99,
+      normalizedDescription,
+    };
+  }
+
+  const rules = await prisma.categorizationRule.findMany({
+    where: { userId, isActive: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const matchedRule = rules.find((rule) => normalizedDescription.includes(rule.keyword.toLowerCase()));
+  if (matchedRule) {
+    return {
+      category: sanitizeCategory(matchedRule.category, normalizedFallbackCategory),
+      source: "rule",
+      status: "auto_assigned",
+      confidence: 0.98,
+      normalizedDescription,
+    };
+  }
+
+  const memory = await prisma.merchantCategoryMemory.findFirst({
+    where: { userId, normalizedDescription },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (memory) {
+    return {
+      category: sanitizeCategory(memory.category, normalizedFallbackCategory),
+      source: "memory",
+      status: "auto_assigned",
+      confidence: Math.min(Math.max(memory.confidence ?? 0.9, 0.7), 1),
+      normalizedDescription,
+    };
+  }
+
+  const aiPrediction = await classifyCategoryWithGemini({
+    description: normalizedDescription,
+    amount,
+  });
+  if (!aiPrediction) {
+    return {
+      category: normalizedFallbackCategory,
+      source: "ai",
+      status: "needs_review",
+      confidence: null,
+      normalizedDescription,
+    };
+  }
+  const resolvedCategory = sanitizeCategory(aiPrediction.category, normalizedFallbackCategory);
+  return {
+    category: resolvedCategory,
+    source: "ai",
+    status: aiPrediction.confidence != null && aiPrediction.confidence >= 0.75 ? "auto_assigned" : "needs_review",
+    confidence: aiPrediction.confidence != null ? Number(aiPrediction.confidence.toFixed(2)) : null,
+    normalizedDescription,
+  };
+}
+
 function tryExtractPayslipData(text) {
   const compact = text.replace(/\s+/g, " ").trim();
   const amountMatch =
@@ -781,6 +974,11 @@ app.get("/api/transactions", async (req, res, next) => {
         amount: transaction.amount,
         category: transaction.category,
         date: transaction.date.toISOString(),
+        accountName: transaction.accountName,
+        accountType: transaction.accountType,
+        categorizationSource: transaction.categorizationSource,
+        categorizationStatus: transaction.categorizationStatus,
+        categorizationConfidence: transaction.categorizationConfidence,
       })),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
@@ -814,18 +1012,61 @@ app.patch("/api/transactions/:sourceType/:id", async (req, res, next) => {
         return res.status(404).json({ error: "Transaction not found." });
       }
     } else {
+      const existingImport =
+        payload.category || payload.description
+          ? await prisma.importedTransaction.findFirst({
+              where: { id: params.id, userId },
+            })
+          : null;
       const updatedImport = await prisma.importedTransaction.updateMany({
         where: { id: params.id, userId },
         data: {
-          ...(payload.description ? { description: payload.description } : {}),
+          ...(payload.description
+            ? {
+                description: payload.description,
+                normalizedDescription: normalizeDescriptionForMemory(payload.description),
+              }
+            : {}),
           ...(typeof payload.amount === "number" ? { amount: Number(payload.amount.toFixed(2)) } : {}),
-          ...(payload.category ? { category: payload.category } : {}),
+          ...(payload.category
+            ? {
+                category: payload.category,
+                categorizationSource: "manual",
+                categorizationStatus: "approved",
+                categorizationConfidence: 1,
+              }
+            : {}),
           ...(payload.date ? { date: new Date(payload.date) } : {}),
         },
       });
 
       if (updatedImport.count === 0) {
         return res.status(404).json({ error: "Transaction not found." });
+      }
+
+      if (payload.category && existingImport) {
+        const normalizedDescription =
+          existingImport.normalizedDescription || normalizeDescriptionForMemory(existingImport.description);
+        await prisma.merchantCategoryMemory.upsert({
+          where: {
+            userId_normalizedDescription: {
+              userId,
+              normalizedDescription,
+            },
+          },
+          update: {
+            category: sanitizeCategory(payload.category, payload.category),
+            confidence: 1,
+            source: "manual_edit",
+          },
+          create: {
+            userId,
+            normalizedDescription,
+            category: sanitizeCategory(payload.category, payload.category),
+            confidence: 1,
+            source: "manual_edit",
+          },
+        });
       }
     }
 
@@ -857,6 +1098,156 @@ app.delete("/api/transactions/:sourceType/:id", async (req, res, next) => {
     }
 
     return res.status(204).send();
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get("/api/transactions/review", async (_req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const reviewTransactions = await prisma.importedTransaction.findMany({
+      where: { userId, categorizationStatus: "needs_review" },
+      orderBy: { date: "desc" },
+    });
+    return res.json({
+      data: reviewTransactions.map((transaction) => ({
+        id: transaction.id,
+        sourceType: "imported",
+        description: transaction.description,
+        amount: transaction.amount,
+        category: transaction.category,
+        date: transaction.date.toISOString(),
+        accountName: transaction.accountName,
+        accountType: transaction.accountType,
+        categorizationSource: transaction.categorizationSource,
+        categorizationStatus: transaction.categorizationStatus,
+        categorizationConfidence: transaction.categorizationConfidence,
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post("/api/transactions/reclassify-existing", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const onlyUncategorized = req.query?.onlyUncategorized === "true";
+    const whereClause = {
+      userId,
+      ...(onlyUncategorized ? { category: "Uncategorized" } : {}),
+    };
+    const existingTransactions = await prisma.importedTransaction.findMany({
+      where: whereClause,
+      orderBy: { date: "desc" },
+    });
+
+    let updatedCount = 0;
+    let autoAssignedCount = 0;
+    let needsReviewCount = 0;
+
+    for (const transaction of existingTransactions) {
+      const categorization = await resolveCategorizationDecision({
+        userId,
+        description: transaction.description,
+        amount: transaction.amount,
+        fallbackCategory: transaction.category || "Uncategorized",
+      });
+
+      const result = await prisma.importedTransaction.updateMany({
+        where: { id: transaction.id, userId },
+        data: {
+          normalizedDescription: categorization.normalizedDescription,
+          category: categorization.category,
+          categorizationSource: categorization.source,
+          categorizationStatus: categorization.status,
+          categorizationConfidence: categorization.confidence,
+        },
+      });
+      if (result.count > 0) {
+        updatedCount += result.count;
+        if (categorization.status === "auto_assigned") {
+          autoAssignedCount += 1;
+        } else if (categorization.status === "needs_review") {
+          needsReviewCount += 1;
+        }
+      }
+    }
+
+    return res.json({
+      data: {
+        scannedCount: existingTransactions.length,
+        updatedCount,
+        autoAssignedCount,
+        needsReviewCount,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.patch("/api/transactions/imported/:id/categorization", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const params = reviewTransactionParamsSchema.parse(req.params ?? {});
+    const payload = resolveCategorizationSchema.parse(req.body ?? {});
+
+    const existing = await prisma.importedTransaction.findFirst({
+      where: { id: params.id, userId },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: "Transaction not found." });
+    }
+
+    const normalizedDescription = existing.normalizedDescription || normalizeDescriptionForMemory(existing.description);
+    const normalizedCategory = sanitizeCategory(payload.category, payload.category);
+
+    const updateManyResult = await prisma.importedTransaction.updateMany({
+      where: {
+        userId,
+        ...(payload.applyToSimilar
+          ? { normalizedDescription }
+          : { id: params.id }),
+      },
+      data: {
+        category: normalizedCategory,
+        categorizationSource: payload.applyToSimilar ? "memory" : "manual",
+        categorizationStatus: "approved",
+        categorizationConfidence: payload.applyToSimilar ? 0.95 : 1,
+      },
+    });
+
+    await prisma.merchantCategoryMemory.upsert({
+      where: {
+        userId_normalizedDescription: {
+          userId,
+          normalizedDescription,
+        },
+      },
+      update: {
+        category: normalizedCategory,
+        confidence: payload.applyToSimilar ? 0.95 : 1,
+        source: "manual_review",
+      },
+      create: {
+        userId,
+        normalizedDescription,
+        category: normalizedCategory,
+        confidence: payload.applyToSimilar ? 0.95 : 1,
+        source: "manual_review",
+      },
+    });
+
+    return res.json({
+      message: payload.applyToSimilar
+        ? "Categorization applied to similar transactions."
+        : "Categorization updated.",
+      data: {
+        updatedCount: updateManyResult.count,
+      },
+    });
   } catch (error) {
     return next(error);
   }
@@ -1332,11 +1723,20 @@ app.get("/api/insights/monthly", async (req, res, next) => {
       prisma.paydayEvent.findMany({ where: { userId, date: { gte: monthRange.start, lt: monthRange.end } } }),
     ]);
 
-    const expenseTotal = [...expenses, ...imported].reduce((sum, row) => sum + row.amount, 0);
-    const incomeTotal = paydays.reduce((sum, row) => sum + row.expectedAmount, 0);
+    const importedIncome = imported.filter((row) => row.category === "Income").reduce((sum, row) => sum + row.amount, 0);
+    const importedExpense = imported
+      .filter((row) => row.category !== "Income" && row.category !== "Transfer")
+      .reduce((sum, row) => sum + Math.abs(row.amount), 0);
+    const expenseTotal = expenses.reduce((sum, row) => sum + row.amount, 0) + importedExpense;
+    const incomeTotal = paydays.reduce((sum, row) => sum + row.expectedAmount, 0) + importedIncome;
     const byCategory = new Map();
-    for (const row of [...expenses.map((x) => ({ category: x.category, amount: x.amount })), ...imported]) {
-      byCategory.set(row.category, (byCategory.get(row.category) ?? 0) + row.amount);
+    for (const row of [
+      ...expenses.map((x) => ({ category: x.category, amount: x.amount })),
+      ...imported
+        .filter((x) => x.category !== "Transfer")
+        .map((x) => ({ category: x.category, amount: Math.abs(x.amount) })),
+    ]) {
+      byCategory.set(row.category, (byCategory.get(row.category) ?? 0) + Math.abs(row.amount));
     }
     const topCategories = [...byCategory.entries()]
       .map(([category, amount]) => ({ category, amount: Number(amount.toFixed(2)) }))
@@ -1350,6 +1750,62 @@ app.get("/api/insights/monthly", async (req, res, next) => {
         incomeTotal: Number(incomeTotal.toFixed(2)),
         net: Number((incomeTotal - expenseTotal).toFixed(2)),
         topCategories,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get("/api/insights/balance-sheet", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const month = typeof req.query.month === "string" ? req.query.month : null;
+    const monthRange = month ? getMonthDateRange(month) : null;
+    if (month && !monthRange) {
+      return res.status(400).json({ error: "month must use YYYY-MM format." });
+    }
+    const imported = await prisma.importedTransaction.findMany({
+      where: {
+        userId,
+        ...(monthRange ? { date: { gte: monthRange.start, lt: monthRange.end } } : {}),
+      },
+      orderBy: { date: "asc" },
+    });
+
+    const accountSummary = new Map();
+    for (const row of imported) {
+      const key = `${row.accountName}::${row.accountType}`;
+      const current = accountSummary.get(key) ?? {
+        accountName: row.accountName,
+        accountType: row.accountType,
+        netFlow: 0,
+        income: 0,
+        expenses: 0,
+        transfers: 0,
+      };
+      const amount = Number(row.amount) || 0;
+      current.netFlow += amount;
+      if (row.category === "Income") current.income += Math.max(amount, 0);
+      else if (row.category === "Transfer") current.transfers += Math.abs(amount);
+      else current.expenses += Math.abs(amount);
+      accountSummary.set(key, current);
+    }
+
+    const accounts = [...accountSummary.values()].map((row) => ({
+      ...row,
+      netFlow: Number(row.netFlow.toFixed(2)),
+      income: Number(row.income.toFixed(2)),
+      expenses: Number(row.expenses.toFixed(2)),
+      transfers: Number(row.transfers.toFixed(2)),
+    }));
+    const totalNetFlow = accounts.reduce((sum, row) => sum + row.netFlow, 0);
+
+    return res.json({
+      data: {
+        month: month ?? null,
+        accounts,
+        totalNetFlow: Number(totalNetFlow.toFixed(2)),
       },
     });
   } catch (error) {
@@ -1670,31 +2126,52 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
     const parsed = parseStatementFile(req.file);
     const userId = getDefaultUserIdOrThrow();
     const statementFileName = req.file?.originalname ?? "statement";
+    const accountNameRaw = typeof req.body?.accountName === "string" ? req.body.accountName.trim() : "";
+    const accountTypeRaw = typeof req.body?.accountType === "string" ? req.body.accountType.trim().toLowerCase() : "";
+    const accountName = accountNameRaw || "Primary";
+    const accountType = ["checking", "savings", "credit_card", "loan", "cash"].includes(accountTypeRaw)
+      ? accountTypeRaw
+      : "checking";
     const savedTransactions = [];
     for (const transaction of parsed.validTransactions) {
-      const resolvedCategory = await applyCategorizationRules({
+      const categorization = await resolveCategorizationDecision({
         userId,
         description: transaction.description,
+        amount: transaction.amount,
         fallbackCategory: transaction.category,
       });
       const saved = await prisma.importedTransaction.create({
         data: {
           userId,
           statementFileName,
+          accountName,
+          accountType,
           date: new Date(transaction.date),
           description: transaction.description,
+          normalizedDescription: categorization.normalizedDescription,
           amount: transaction.amount,
-          category: resolvedCategory,
+          category: categorization.category,
+          categorizationSource: categorization.source,
+          categorizationStatus: categorization.status,
+          categorizationConfidence: categorization.confidence,
           source: transaction.source,
         },
       });
       savedTransactions.push(saved);
     }
+    const autoCategorizedCount = savedTransactions.filter(
+      (transaction) => transaction.categorizationStatus === "auto_assigned",
+    ).length;
+    const needsReviewCount = savedTransactions.filter(
+      (transaction) => transaction.categorizationStatus === "needs_review",
+    ).length;
 
     return res.status(201).json({
       data: {
         importedCount: savedTransactions.length,
         skippedCount: parsed.invalidRows.length,
+        autoCategorizedCount,
+        needsReviewCount,
         transactions: savedTransactions.map((transaction) => ({
           id: transaction.id,
           date: transaction.date.toISOString(),
@@ -1702,6 +2179,11 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
           amount: transaction.amount,
           category: transaction.category,
           source: transaction.source,
+          accountName: transaction.accountName,
+          accountType: transaction.accountType,
+          categorizationSource: transaction.categorizationSource,
+          categorizationStatus: transaction.categorizationStatus,
+          categorizationConfidence: transaction.categorizationConfidence,
         })),
         invalidRows: parsed.invalidRows,
       },

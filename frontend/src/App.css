@@ -475,6 +475,29 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+.transaction-actions input {
+  width: 150px;
+  border: 1px solid #4b5563;
+  border-radius: 10px;
+  background: #111827;
+  color: #f8fafc;
+  padding: 0.45rem 0.55rem;
+}
+
+.review-queue-panel {
+  margin-top: 1rem;
+  border-top: 1px solid #334155;
+  padding-top: 0.9rem;
+}
+
+.review-queue-panel h3 {
+  margin: 0;
+}
+
+.review-queue-panel p {
+  margin: 0.3rem 0 0;
+}
+
 .debt-panel {
   border: 1px solid #374151;
   border-radius: 10px;
