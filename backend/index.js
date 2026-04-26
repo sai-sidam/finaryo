@@ -281,6 +281,24 @@ function buildTransactionFingerprint({ date, description, amount, accountName, a
   return `${dayKey}|${normalizedAmount}|${normalizedDescription}|${normalizedAccount}`;
 }
 
+function dedupeImportedTransactionsForInsights(rows) {
+  const seen = new Set();
+  const deduped = [];
+  for (const row of rows) {
+    const fingerprint = buildTransactionFingerprint({
+      date: row.date,
+      description: row.description,
+      amount: row.amount,
+      accountName: row.accountName,
+      accountType: row.accountType,
+    });
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    deduped.push(row);
+  }
+  return deduped;
+}
+
 async function reconcileDebtAccountsFromCreditCardImports(userId) {
   const creditCardRows = await prisma.importedTransaction.findMany({
     where: { userId, accountType: "credit_card" },
@@ -467,6 +485,99 @@ function inferBankNameFromText(text) {
   return match?.name ?? null;
 }
 
+function isKnownBankNameLikelyPresent(bankName, text) {
+  const normalizedBank = String(bankName ?? "").toLowerCase().trim();
+  const normalizedText = String(text ?? "").toLowerCase();
+  if (!normalizedBank) return false;
+  const aliases = {
+    chase: ["chase", "jpmorgan"],
+    "bank of america": ["bank of america", "bofa"],
+    "wells fargo": ["wells fargo"],
+    citi: ["citibank", "citi"],
+    "capital one": ["capital one"],
+    "american express": ["american express", "amex"],
+    discover: ["discover"],
+    "hdfc bank": ["hdfc"],
+    "icici bank": ["icici"],
+    sbi: ["state bank of india", "sbi"],
+    "axis bank": ["axis bank"],
+  };
+  const tokens = aliases[normalizedBank] ?? [normalizedBank];
+  return tokens.some((token) => normalizedText.includes(token));
+}
+
+async function inferAccountMetadataWithGemini({ fileName, sheetName, cellTexts }) {
+  if (!runtimeConfig.GEMINI_API_KEY) {
+    return null;
+  }
+  const model = runtimeConfig.GEMINI_MODEL || "gemini-flash-lite-latest";
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model,
+  )}:generateContent?key=${encodeURIComponent(runtimeConfig.GEMINI_API_KEY)}`;
+  const sampleText = cellTexts.slice(0, 180).join(" | ").slice(0, 8000);
+  const prompt = [
+    "You classify bank statement account metadata.",
+    "Return ONLY strict JSON with keys:",
+    "bankName (string or null), accountType (one of checking,savings,credit_card,loan,cash),",
+    "accountLabel (string), endingDigits (string or null), confidence (0 to 1).",
+    "If uncertain, still choose best accountType and set lower confidence.",
+    `File name: ${fileName}`,
+    `Sheet name: ${sheetName}`,
+    `Statement text sample: ${sampleText}`,
+  ].join("\n");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 220,
+        },
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const text =
+      payload?.candidates?.[0]?.content?.parts
+        ?.map((part) => part?.text)
+        .filter(Boolean)
+        .join(" ")
+        ?.trim() ?? "";
+    if (!text) return null;
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]);
+    const allowedTypes = new Set(["checking", "savings", "credit_card", "loan", "cash"]);
+    const accountType = allowedTypes.has(parsed?.accountType) ? parsed.accountType : null;
+    const accountLabel = sanitizeAccountName(parsed?.accountLabel);
+    const bankName = sanitizeAccountName(parsed?.bankName ?? "");
+    const endingDigitsRaw = String(parsed?.endingDigits ?? "").trim();
+    const endingDigits = /^\d{2,6}$/.test(endingDigitsRaw) ? endingDigitsRaw : null;
+    const confidenceRaw = Number(parsed?.confidence);
+    const confidence = Number.isFinite(confidenceRaw)
+      ? Math.max(0, Math.min(confidenceRaw, 1))
+      : null;
+    if (!accountType) return null;
+    return {
+      bankName: bankName || null,
+      accountType,
+      accountLabel: accountLabel || null,
+      endingDigits,
+      confidence,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function buildStableAccountLabel({ bankName, accountType, endingDigits }) {
   const typeLabelMap = {
     credit_card: "Credit Card",
@@ -497,14 +608,20 @@ function isLikelySyntheticMonthLabel(value) {
   );
 }
 
-function inferAccountMetadata({ fileName, sheetName, rows, headerRowIndex }) {
+async function inferAccountMetadata({ fileName, sheetName, rows, headerRowIndex }) {
   const scanLimit = Math.min(rows.length, Math.max(headerRowIndex + 1, 20));
   const scopeRows = rows.slice(0, scanLimit);
+  const headerRows = rows.slice(0, Math.max(headerRowIndex, 0));
+  const headerCellTexts = headerRows
+    .flatMap((row) => (Array.isArray(row) ? row : []))
+    .map((cell) => String(cell ?? "").trim())
+    .filter(Boolean);
   const cellTexts = scopeRows
     .flatMap((row) => (Array.isArray(row) ? row : []))
     .map((cell) => String(cell ?? "").trim())
     .filter(Boolean);
   const scopeText = cellTexts.join(" | ");
+  const headerText = headerCellTexts.join(" | ");
   const fileStem = String(fileName ?? "Primary")
     .replace(/\.[^.]+$/, "")
     .replace(/[_-]+/g, " ")
@@ -514,7 +631,10 @@ function inferAccountMetadata({ fileName, sheetName, rows, headerRowIndex }) {
     cellTexts.find((text) => /^account name[:\s-]+/i.test(text))?.replace(/^account name[:\s-]+/i, "") ??
     cellTexts.find((text) => /^a\/?c name[:\s-]+/i.test(text))?.replace(/^a\/?c name[:\s-]+/i, "") ??
     null;
-  const bankName = inferBankNameFromText(`${scopeText} ${sheetName} ${fileName}`);
+  const inferredBankFromHeader = inferBankNameFromText(`${headerText} ${sheetName} ${fileName}`);
+  const bankName = isKnownBankNameLikelyPresent(inferredBankFromHeader, `${headerText} ${sheetName} ${fileName}`)
+    ? inferredBankFromHeader
+    : null;
   const accountNumberText = cellTexts.find((text) =>
     /(account number|a\/?c number|acct number|ending|xxxx|x{2,})/i.test(text),
   );
@@ -535,6 +655,31 @@ function inferAccountMetadata({ fileName, sheetName, rows, headerRowIndex }) {
   const inferredName = isLikelySyntheticMonthLabel(inferredRawName)
     ? buildStableAccountLabel({ bankName, accountType, endingDigits })
     : inferredRawName;
+
+  const aiMetadata = await inferAccountMetadataWithGemini({
+    fileName,
+    sheetName,
+    cellTexts,
+  });
+  if (aiMetadata && (aiMetadata.confidence ?? 0) >= 0.65) {
+    const trustedAiBankName = isKnownBankNameLikelyPresent(
+      aiMetadata.bankName,
+      `${headerText} ${sheetName} ${fileName}`,
+    )
+      ? aiMetadata.bankName
+      : null;
+    const aiLabel =
+      aiMetadata.accountLabel ||
+      buildStableAccountLabel({
+        bankName: trustedAiBankName,
+        accountType: aiMetadata.accountType,
+        endingDigits: aiMetadata.endingDigits,
+      });
+    return {
+      accountName: sanitizeAccountName(aiLabel || inferredName || "Primary"),
+      accountType: aiMetadata.accountType,
+    };
+  }
 
   return {
     accountName: sanitizeAccountName(inferredName || "Primary"),
@@ -868,7 +1013,7 @@ function normalizeTransactionRow(row, index, columnIndexes = null) {
   };
 }
 
-function parseStatementFile(file) {
+async function parseStatementFile(file) {
   if (!file) {
     const error = new Error("Please upload an Excel or CSV statement file.");
     error.statusCode = 400;
@@ -930,7 +1075,7 @@ function parseStatementFile(file) {
     }
   });
 
-  const accountMetadata = inferAccountMetadata({
+  const accountMetadata = await inferAccountMetadata({
     fileName: file.originalname,
     sheetName: firstSheetName,
     rows: matrixRows,
@@ -1565,6 +1710,62 @@ app.post("/api/transactions/reinfer-accounts", async (_req, res, next) => {
   }
 });
 
+app.post("/api/transactions/cleanup-duplicates", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const dryRun = req.query?.dryRun === "true";
+    const imported = await prisma.importedTransaction.findMany({
+      where: { userId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        date: true,
+        description: true,
+        amount: true,
+        accountName: true,
+        accountType: true,
+      },
+    });
+
+    const seen = new Set();
+    const duplicateIds = [];
+    for (const row of imported) {
+      const fingerprint = buildTransactionFingerprint({
+        date: row.date,
+        description: row.description,
+        amount: row.amount,
+        accountName: row.accountName,
+        accountType: row.accountType,
+      });
+      if (seen.has(fingerprint)) {
+        duplicateIds.push(row.id);
+      } else {
+        seen.add(fingerprint);
+      }
+    }
+
+    let deletedCount = 0;
+    if (!dryRun && duplicateIds.length > 0) {
+      const deleteResult = await prisma.importedTransaction.deleteMany({
+        where: { userId, id: { in: duplicateIds } },
+      });
+      deletedCount = deleteResult.count;
+    }
+
+    return res.json({
+      data: {
+        scannedCount: imported.length,
+        uniqueCount: seen.size,
+        duplicateCount: duplicateIds.length,
+        deletedCount,
+        dryRun,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 app.patch("/api/transactions/imported/:id/categorization", async (req, res, next) => {
   try {
     const userId = getDefaultUserIdOrThrow();
@@ -2094,11 +2295,12 @@ app.get("/api/insights/monthly", async (req, res, next) => {
     if (!monthRange) {
       return res.status(400).json({ error: "month must use YYYY-MM format." });
     }
-    const [expenses, imported, paydays] = await Promise.all([
+    const [expenses, importedRaw, paydays] = await Promise.all([
       prisma.expense.findMany({ where: { userId, createdAt: { gte: monthRange.start, lt: monthRange.end } } }),
       prisma.importedTransaction.findMany({ where: { userId, date: { gte: monthRange.start, lt: monthRange.end } } }),
       prisma.paydayEvent.findMany({ where: { userId, date: { gte: monthRange.start, lt: monthRange.end } } }),
     ]);
+    const imported = dedupeImportedTransactionsForInsights(importedRaw);
 
     const importedIncome = imported.filter((row) => row.category === "Income").reduce((sum, row) => sum + row.amount, 0);
     const importedExpense = imported
@@ -2142,13 +2344,14 @@ app.get("/api/insights/balance-sheet", async (req, res, next) => {
     if (month && !monthRange) {
       return res.status(400).json({ error: "month must use YYYY-MM format." });
     }
-    const imported = await prisma.importedTransaction.findMany({
+    const importedRaw = await prisma.importedTransaction.findMany({
       where: {
         userId,
         ...(monthRange ? { date: { gte: monthRange.start, lt: monthRange.end } } : {}),
       },
       orderBy: { date: "asc" },
     });
+    const imported = dedupeImportedTransactionsForInsights(importedRaw);
 
     const accountSummary = new Map();
     for (const row of imported) {
@@ -2503,7 +2706,7 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
     if (!req.file?.buffer) {
       return res.status(400).json({ error: "Missing statement file data." });
     }
-    const parsed = parseStatementFile(req.file);
+    const parsed = await parseStatementFile(req.file);
     const userId = getDefaultUserIdOrThrow();
     const statementFileName = req.file?.originalname ?? "statement";
     const statementFileHash = createHash("sha256").update(req.file.buffer).digest("hex");

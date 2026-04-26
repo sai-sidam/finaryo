@@ -103,6 +103,8 @@ function App() {
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [isLoadingBalanceSheet, setIsLoadingBalanceSheet] = useState(false);
   const [balanceSheet, setBalanceSheet] = useState<BalanceSheetInsights | null>(null);
+  const [isCleaningDuplicates, setIsCleaningDuplicates] = useState(false);
+  const [duplicateCleanupSummary, setDuplicateCleanupSummary] = useState<string | null>(null);
   const [recurringCandidates, setRecurringCandidates] = useState<RecurringCandidate[]>([]);
   const [isLoadingRecurring, setIsLoadingRecurring] = useState(false);
   const [payslipFile, setPayslipFile] = useState<File | null>(null);
@@ -866,6 +868,41 @@ function App() {
     }
   }
 
+  async function handleCleanupDuplicates() {
+    const shouldCleanup = window.confirm(
+      "This permanently removes duplicate imported transactions. Continue?",
+    );
+    if (!shouldCleanup) {
+      return;
+    }
+    setError(null);
+    setDuplicateCleanupSummary(null);
+    setIsCleaningDuplicates(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/transactions/cleanup-duplicates`, {
+        method: "POST",
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        data?: { scannedCount?: number; duplicateCount?: number; deletedCount?: number; uniqueCount?: number };
+      };
+      if (!response.ok || !payload.data) {
+        throw new Error(payload.error ?? "Unable to clean duplicate transactions.");
+      }
+      const scanned = payload.data.scannedCount ?? 0;
+      const duplicates = payload.data.duplicateCount ?? 0;
+      const deleted = payload.data.deletedCount ?? 0;
+      setDuplicateCleanupSummary(
+        `Scanned ${scanned} imported rows. Found ${duplicates} duplicates and deleted ${deleted}.`,
+      );
+      await Promise.all([loadTransactions(), loadReviewTransactions(), loadMonthlyInsights(), loadBalanceSheet()]);
+    } catch (cleanupError) {
+      setError(cleanupError instanceof Error ? cleanupError.message : "Unable to clean duplicate transactions.");
+    } finally {
+      setIsCleaningDuplicates(false);
+    }
+  }
+
   const navItems: Array<{ id: AppSection; label: string }> = [
     { id: "dashboard", label: "Dashboard" },
     { id: "transactions", label: "Transactions" },
@@ -1248,6 +1285,9 @@ function App() {
             loadBalanceSheet={loadBalanceSheet}
             isLoadingBalanceSheet={isLoadingBalanceSheet}
             balanceSheet={balanceSheet}
+            handleCleanupDuplicates={handleCleanupDuplicates}
+            isCleaningDuplicates={isCleaningDuplicates}
+            duplicateCleanupSummary={duplicateCleanupSummary}
           />
         )}
 

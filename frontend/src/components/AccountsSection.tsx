@@ -7,6 +7,9 @@ type AccountsSectionProps = {
   loadBalanceSheet: () => Promise<void>;
   isLoadingBalanceSheet: boolean;
   balanceSheet: BalanceSheetInsights | null;
+  handleCleanupDuplicates: () => Promise<void>;
+  isCleaningDuplicates: boolean;
+  duplicateCleanupSummary: string | null;
 };
 
 function AccountsSection({
@@ -15,6 +18,9 @@ function AccountsSection({
   loadBalanceSheet,
   isLoadingBalanceSheet,
   balanceSheet,
+  handleCleanupDuplicates,
+  isCleaningDuplicates,
+  duplicateCleanupSummary,
 }: AccountsSectionProps) {
   return (
     <section className="accounts-panel">
@@ -25,7 +31,11 @@ function AccountsSection({
         <button type="button" onClick={() => void loadBalanceSheet()}>
           Refresh Accounts
         </button>
+        <button type="button" onClick={() => void handleCleanupDuplicates()} disabled={isCleaningDuplicates}>
+          {isCleaningDuplicates ? "Cleaning Duplicates..." : "Cleanup Duplicates"}
+        </button>
       </div>
+      {duplicateCleanupSummary && <p>{duplicateCleanupSummary}</p>}
       {isLoadingBalanceSheet ? (
         <p>Loading account summary...</p>
       ) : !balanceSheet || balanceSheet.accounts.length === 0 ? (
