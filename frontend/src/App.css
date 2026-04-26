@@ -220,6 +220,14 @@ button:disabled {
   color: #cbd5e1;
 }
 
+.upload-invalid-list {
+  margin: 0.25rem 0 0;
+  padding-left: 1rem;
+  color: #fca5a5;
+  display: grid;
+  gap: 0.2rem;
+}
+
 .upload-transaction-list {
   list-style: none;
   margin: 0.8rem 0 0;

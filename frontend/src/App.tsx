@@ -849,7 +849,16 @@ function App() {
               <span>Imported: {uploadResult.importedCount}</span>
               <span>Skipped: {uploadResult.skippedCount}</span>
               {uploadResult.invalidRows.length > 0 && (
-                <span>Invalid rows: {uploadResult.invalidRows.map((row) => row.rowNumber).join(", ")}</span>
+                <>
+                  <span>Invalid rows: {uploadResult.invalidRows.map((row) => row.rowNumber).join(", ")}</span>
+                  <ul className="upload-invalid-list">
+                    {uploadResult.invalidRows.map((row) => (
+                      <li key={`${row.rowNumber}-${row.reason}`}>
+                        Row {row.rowNumber}: {row.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </>
               )}
             </div>
           )}
