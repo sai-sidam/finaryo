@@ -225,6 +225,120 @@ function pickRowValue(row, keys) {
   return undefined;
 }
 
+function normalizeHeaderKey(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function parseAmountValue(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const isNegative = raw.includes("(") || /\bdr\b/i.test(raw) || raw.startsWith("-");
+  const cleaned = raw.replace(/[,$()\s]/g, "").replace(/\b(cr|dr)\b/gi, "");
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const absolute = Math.abs(parsed);
+  return isNegative ? -absolute : absolute;
+}
+
+function findColumnIndex(normalizedHeaders, aliases) {
+  const aliasSet = new Set(aliases.map((alias) => normalizeHeaderKey(alias)));
+  return normalizedHeaders.findIndex((header) => aliasSet.has(header));
+}
+
+function detectStatementHeader(rows) {
+  const MAX_SCAN_ROWS = 30;
+  for (let rowIndex = 0; rowIndex < Math.min(rows.length, MAX_SCAN_ROWS); rowIndex += 1) {
+    const row = Array.isArray(rows[rowIndex]) ? rows[rowIndex] : [];
+    const normalizedHeaders = row.map((cell) => normalizeHeaderKey(cell));
+    if (normalizedHeaders.every((cell) => !cell)) {
+      continue;
+    }
+
+    const dateIndex = findColumnIndex(normalizedHeaders, [
+      "date",
+      "transaction date",
+      "posted date",
+      "booked date",
+      "value date",
+      "txn date",
+      "trans date",
+    ]);
+    const descriptionIndex = findColumnIndex(normalizedHeaders, [
+      "description",
+      "name",
+      "merchant",
+      "details",
+      "memo",
+      "narration",
+      "transaction details",
+      "remarks",
+      "particulars",
+      "transaction description",
+    ]);
+    const amountIndex = findColumnIndex(normalizedHeaders, [
+      "amount",
+      "transaction amount",
+      "value",
+      "amt",
+      "txn amount",
+      "debit amount",
+      "credit amount",
+      "withdrawal amount",
+      "deposit amount",
+      "withdrawal amt",
+      "deposit amt",
+      "dr amount",
+      "cr amount",
+    ]);
+    const debitIndex = findColumnIndex(normalizedHeaders, [
+      "debit",
+      "debit amount",
+      "withdrawal",
+      "withdrawal amount",
+      "withdrawal amt",
+      "dr",
+      "dr amount",
+    ]);
+    const creditIndex = findColumnIndex(normalizedHeaders, [
+      "credit",
+      "credit amount",
+      "deposit",
+      "deposit amount",
+      "deposit amt",
+      "cr",
+      "cr amount",
+    ]);
+    const categoryIndex = findColumnIndex(normalizedHeaders, ["category", "type", "transaction type", "subtype"]);
+
+    const hasDate = dateIndex >= 0;
+    const hasDescription = descriptionIndex >= 0;
+    const hasAmount = amountIndex >= 0 || debitIndex >= 0 || creditIndex >= 0;
+    if (hasDate && hasDescription && hasAmount) {
+      return {
+        headerRowIndex: rowIndex,
+        columns: {
+          dateIndex,
+          descriptionIndex,
+          amountIndex,
+          debitIndex,
+          creditIndex,
+          categoryIndex,
+        },
+      };
+    }
+  }
+  return null;
+}
+
 function normalizeExcelDate(value) {
   if (value == null || value === "") {
     return null;
@@ -248,16 +362,81 @@ function normalizeExcelDate(value) {
   return maybeDate.toISOString();
 }
 
-function normalizeTransactionRow(row, index) {
-  const description = pickRowValue(row, ["description", "name", "merchant", "details", "memo"]);
-  const amount = pickRowValue(row, ["amount", "transaction amount", "value"]);
-  const date = pickRowValue(row, ["date", "transaction date", "posted date", "booked date"]);
-  const category = pickRowValue(row, ["category", "type"]);
+function normalizeTransactionRow(row, index, columnIndexes = null) {
+  const readCell = (cellIndex) => (cellIndex >= 0 && Array.isArray(row) ? row[cellIndex] : undefined);
+
+  const description =
+    columnIndexes?.descriptionIndex != null
+      ? readCell(columnIndexes.descriptionIndex)
+      : pickRowValue(row, [
+          "description",
+          "name",
+          "merchant",
+          "details",
+          "memo",
+          "narration",
+          "transaction details",
+          "remarks",
+          "particulars",
+        ]);
+  const date =
+    columnIndexes?.dateIndex != null
+      ? readCell(columnIndexes.dateIndex)
+      : pickRowValue(row, [
+          "date",
+          "transaction date",
+          "posted date",
+          "booked date",
+          "value date",
+          "txn date",
+          "trans date",
+        ]);
+  const category =
+    columnIndexes?.categoryIndex != null
+      ? readCell(columnIndexes.categoryIndex)
+      : pickRowValue(row, ["category", "type", "transaction type", "subtype"]);
+
+  let amount;
+  if (columnIndexes) {
+    const directAmount = readCell(columnIndexes.amountIndex);
+    const debit = readCell(columnIndexes.debitIndex);
+    const credit = readCell(columnIndexes.creditIndex);
+
+    if (directAmount !== undefined && String(directAmount).trim() !== "") {
+      amount = parseAmountValue(directAmount);
+    } else {
+      const parsedDebit = parseAmountValue(debit);
+      const parsedCredit = parseAmountValue(credit);
+      if (parsedDebit != null && Math.abs(parsedDebit) > 0) {
+        amount = -Math.abs(parsedDebit);
+      } else if (parsedCredit != null && Math.abs(parsedCredit) > 0) {
+        amount = Math.abs(parsedCredit);
+      }
+    }
+  } else {
+    amount = parseAmountValue(
+      pickRowValue(row, [
+        "amount",
+        "transaction amount",
+        "value",
+        "amt",
+        "debit",
+        "credit",
+        "withdrawal amount",
+        "deposit amount",
+      ]),
+    );
+  }
 
   const normalizedDescription = String(description ?? "").trim();
-  const normalizedAmount = typeof amount === "number" ? amount : Number(String(amount ?? "").replace(/[$,]/g, ""));
+  const normalizedAmount = amount;
   const normalizedDate = normalizeExcelDate(date);
   const normalizedCategory = String(category ?? "").trim();
+
+  // Ignore non-data rows (headers/footers/empty rows) without polluting invalidRows.
+  if (!normalizedDescription && !normalizedDate && (normalizedAmount == null || !Number.isFinite(normalizedAmount))) {
+    return { ignored: true };
+  }
 
   if (!normalizedDescription || !Number.isFinite(normalizedAmount) || !normalizedDate) {
     return {
@@ -297,27 +476,42 @@ function parseStatementFile(file) {
   }
 
   const worksheet = workbook.Sheets[firstSheetName];
-  const rows = XLSX.utils.sheet_to_json(worksheet, {
+  const matrixRows = XLSX.utils.sheet_to_json(worksheet, {
+    header: 1,
     defval: "",
     raw: true,
     blankrows: false,
   });
 
-  if (!rows.length) {
+  if (!matrixRows.length) {
     const error = new Error("Uploaded file is empty.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const detectedHeader = detectStatementHeader(matrixRows);
+  if (!detectedHeader) {
+    const error = new Error(
+      "Could not detect statement columns. Please include headers for date, description, and amount/debit/credit.",
+    );
     error.statusCode = 400;
     throw error;
   }
 
   const validTransactions = [];
   const invalidRows = [];
+  const dataRows = matrixRows.slice(detectedHeader.headerRowIndex + 1);
 
-  rows.forEach((row, index) => {
-    const result = normalizeTransactionRow(row, index);
+  dataRows.forEach((row, index) => {
+    const sheetRowNumber = detectedHeader.headerRowIndex + index + 2;
+    const result = normalizeTransactionRow(row, sheetRowNumber - 2, detectedHeader.columns);
+    if (result.ignored) {
+      return;
+    }
     if (result.valid) {
       validTransactions.push(result.transaction);
     } else {
-      invalidRows.push({ rowNumber: result.rowNumber, reason: result.reason });
+      invalidRows.push({ rowNumber: sheetRowNumber, reason: result.reason });
     }
   });
 
