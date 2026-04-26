@@ -8,6 +8,7 @@ import type {
   DebtProjection,
   Expense,
   HandLoan,
+  BalanceSheetInsights,
   MonthlyInsights,
   PaydayEvent,
   PayslipDocument,
@@ -19,6 +20,7 @@ import type {
 } from "./types";
 import { buildCalendarDays, formatCurrency, monthStartDate, toMonthKey } from "./utils";
 import InsightsSection from "./components/InsightsSection";
+import AccountsSection from "./components/AccountsSection";
 import DebtSection from "./components/DebtSection";
 import PayslipSection from "./components/PayslipSection";
 import PaydaySection from "./components/PaydaySection";
@@ -27,7 +29,7 @@ import SavingsSection from "./components/SavingsSection";
 import TransactionsSection from "./components/TransactionsSection";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
-type AppSection = "dashboard" | "transactions" | "cashflow" | "debts" | "savings" | "insights";
+type AppSection = "dashboard" | "transactions" | "cashflow" | "debts" | "savings" | "insights" | "accounts";
 
 function App() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -51,6 +53,9 @@ function App() {
   const [minAmount, setMinAmount] = useState("");
   const [maxAmount, setMaxAmount] = useState("");
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [reviewTransactions, setReviewTransactions] = useState<Transaction[]>([]);
+  const [isLoadingReviewTransactions, setIsLoadingReviewTransactions] = useState(false);
+  const [reviewCategoryEdits, setReviewCategoryEdits] = useState<Record<string, string>>({});
   const [activeMonth, setActiveMonth] = useState(() => monthStartDate(new Date()));
   const [selectedPaydayDate, setSelectedPaydayDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [paydayAmount, setPaydayAmount] = useState("");
@@ -96,6 +101,10 @@ function App() {
   const [insightsMonth, setInsightsMonth] = useState(() => toMonthKey(new Date()));
   const [insights, setInsights] = useState<MonthlyInsights | null>(null);
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [isLoadingBalanceSheet, setIsLoadingBalanceSheet] = useState(false);
+  const [balanceSheet, setBalanceSheet] = useState<BalanceSheetInsights | null>(null);
+  const [isCleaningDuplicates, setIsCleaningDuplicates] = useState(false);
+  const [duplicateCleanupSummary, setDuplicateCleanupSummary] = useState<string | null>(null);
   const [recurringCandidates, setRecurringCandidates] = useState<RecurringCandidate[]>([]);
   const [isLoadingRecurring, setIsLoadingRecurring] = useState(false);
   const [payslipFile, setPayslipFile] = useState<File | null>(null);
@@ -153,6 +162,32 @@ function App() {
       setError(loadError instanceof Error ? loadError.message : "Unexpected error while loading transactions.");
     } finally {
       setIsLoadingTransactions(false);
+    }
+  }
+
+  async function loadReviewTransactions() {
+    setIsLoadingReviewTransactions(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/transactions/review`);
+      const payload = (await response.json()) as { error?: string; data?: Transaction[] };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to load review queue.");
+      }
+      const data = Array.isArray(payload.data) ? payload.data : [];
+      setReviewTransactions(data);
+      setReviewCategoryEdits((current) => {
+        const next = { ...current };
+        for (const row of data) {
+          if (!next[row.id]) {
+            next[row.id] = row.category;
+          }
+        }
+        return next;
+      });
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unexpected error while loading review queue.");
+    } finally {
+      setIsLoadingReviewTransactions(false);
     }
   }
 
@@ -267,6 +302,22 @@ function App() {
     }
   }
 
+  async function loadBalanceSheet() {
+    setIsLoadingBalanceSheet(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/insights/balance-sheet?month=${insightsMonth}`);
+      const payload = (await response.json()) as { error?: string; data?: BalanceSheetInsights };
+      if (!response.ok || !payload.data) {
+        throw new Error(payload.error ?? "Unable to load balance sheet.");
+      }
+      setBalanceSheet(payload.data);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load balance sheet.");
+    } finally {
+      setIsLoadingBalanceSheet(false);
+    }
+  }
+
   async function loadRecurringCandidates() {
     setIsLoadingRecurring(true);
     try {
@@ -305,9 +356,16 @@ function App() {
     void loadCategorizationRules();
     void loadSavingsGoals();
     void loadMonthlyInsights();
+    void loadBalanceSheet();
     void loadRecurringCandidates();
     void loadPayslips();
+    void loadReviewTransactions();
   }, []);
+
+  useEffect(() => {
+    void loadMonthlyInsights();
+    void loadBalanceSheet();
+  }, [insightsMonth]);
 
   const { open: openPlaid, ready: isPlaidReady } = usePlaidLink({
     token: plaidLinkToken,
@@ -385,6 +443,14 @@ function App() {
       }
       setPlaidSummary(payload.data);
       setIsPlaidConnected(true);
+      await Promise.all([
+        loadTransactions(),
+        loadReviewTransactions(),
+        loadMonthlyInsights(),
+        loadBalanceSheet(),
+        loadDebts(),
+        loadDebtProjection(),
+      ]);
     } catch (syncError) {
       setError(syncError instanceof Error ? syncError.message : "Plaid transaction sync failed.");
     } finally {
@@ -432,6 +498,7 @@ function App() {
     }
 
     setError(null);
+    setUploadResult(null);
     setIsUploadingStatement(true);
     try {
       const formData = new FormData();
@@ -448,7 +515,7 @@ function App() {
       }
 
       setUploadResult(payload.data);
-      void loadTransactions();
+      await Promise.all([loadTransactions(), loadReviewTransactions(), loadMonthlyInsights(), loadBalanceSheet()]);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Unable to upload statement.");
     } finally {
@@ -467,7 +534,7 @@ function App() {
         const payload = (await response.json()) as { error?: string };
         throw new Error(payload.error ?? "Unable to delete transaction.");
       }
-      await Promise.all([loadExpenses(), loadTransactions()]);
+      await Promise.all([loadExpenses(), loadTransactions(), loadReviewTransactions(), loadMonthlyInsights(), loadBalanceSheet()]);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Unable to delete transaction.");
     }
@@ -501,7 +568,13 @@ function App() {
         throw new Error(payload.error ?? "Unable to update transaction.");
       }
       setEditingTransaction(null);
-      await Promise.all([loadExpenses(), loadTransactions()]);
+      await Promise.all([
+        loadExpenses(),
+        loadTransactions(),
+        loadReviewTransactions(),
+        loadMonthlyInsights(),
+        loadBalanceSheet(),
+      ]);
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update transaction.");
     }
@@ -760,6 +833,76 @@ function App() {
     }
   }
 
+  async function handleResolveReviewTransaction(transactionId: string, applyToSimilar: boolean) {
+    const categoryValue = (reviewCategoryEdits[transactionId] ?? "").trim();
+    if (!categoryValue) {
+      setError("Please enter a category before resolving review.");
+      return;
+    }
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/transactions/imported/${transactionId}/categorization`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: categoryValue,
+          applyToSimilar,
+        }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to resolve transaction categorization.");
+      }
+      await Promise.all([
+        loadTransactions(),
+        loadReviewTransactions(),
+        loadMonthlyInsights(),
+        loadBalanceSheet(),
+      ]);
+    } catch (resolveError) {
+      setError(
+        resolveError instanceof Error
+          ? resolveError.message
+          : "Unable to resolve transaction categorization.",
+      );
+    }
+  }
+
+  async function handleCleanupDuplicates() {
+    const shouldCleanup = window.confirm(
+      "This permanently removes duplicate imported transactions. Continue?",
+    );
+    if (!shouldCleanup) {
+      return;
+    }
+    setError(null);
+    setDuplicateCleanupSummary(null);
+    setIsCleaningDuplicates(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/transactions/cleanup-duplicates`, {
+        method: "POST",
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        data?: { scannedCount?: number; duplicateCount?: number; deletedCount?: number; uniqueCount?: number };
+      };
+      if (!response.ok || !payload.data) {
+        throw new Error(payload.error ?? "Unable to clean duplicate transactions.");
+      }
+      const scanned = payload.data.scannedCount ?? 0;
+      const duplicates = payload.data.duplicateCount ?? 0;
+      const deleted = payload.data.deletedCount ?? 0;
+      setDuplicateCleanupSummary(
+        `Scanned ${scanned} imported rows. Found ${duplicates} duplicates and deleted ${deleted}.`,
+      );
+      await Promise.all([loadTransactions(), loadReviewTransactions(), loadMonthlyInsights(), loadBalanceSheet()]);
+    } catch (cleanupError) {
+      setError(cleanupError instanceof Error ? cleanupError.message : "Unable to clean duplicate transactions.");
+    } finally {
+      setIsCleaningDuplicates(false);
+    }
+  }
+
   const navItems: Array<{ id: AppSection; label: string }> = [
     { id: "dashboard", label: "Dashboard" },
     { id: "transactions", label: "Transactions" },
@@ -767,6 +910,7 @@ function App() {
     { id: "debts", label: "Debts & Loans" },
     { id: "savings", label: "Savings" },
     { id: "insights", label: "Insights & Rules" },
+    { id: "accounts", label: "Accounts" },
   ];
   const activeSectionLabel = navItems.find((item) => item.id === activeSection)?.label ?? "Workspace";
 
@@ -848,8 +992,32 @@ function App() {
               <strong>Import summary</strong>
               <span>Imported: {uploadResult.importedCount}</span>
               <span>Skipped: {uploadResult.skippedCount}</span>
+              {typeof uploadResult.duplicateCount === "number" && (
+                <span>Skipped duplicates: {uploadResult.duplicateCount}</span>
+              )}
+              {typeof uploadResult.autoCategorizedCount === "number" && (
+                <span>Auto-categorized: {uploadResult.autoCategorizedCount}</span>
+              )}
+              {typeof uploadResult.needsReviewCount === "number" && (
+                <span>Needs review: {uploadResult.needsReviewCount}</span>
+              )}
+              {uploadResult.accountName && (
+                <span>
+                  Detected account: {uploadResult.accountName}
+                  {uploadResult.accountType ? ` (${uploadResult.accountType})` : ""}
+                </span>
+              )}
               {uploadResult.invalidRows.length > 0 && (
-                <span>Invalid rows: {uploadResult.invalidRows.map((row) => row.rowNumber).join(", ")}</span>
+                <>
+                  <span>Invalid rows: {uploadResult.invalidRows.map((row) => row.rowNumber).join(", ")}</span>
+                  <ul className="upload-invalid-list">
+                    {uploadResult.invalidRows.map((row) => (
+                      <li key={`${row.rowNumber}-${row.reason}`}>
+                        Row {row.rowNumber}: {row.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </>
               )}
             </div>
           )}
@@ -867,6 +1035,21 @@ function App() {
                 </li>
               ))}
             </ul>
+          )}
+          {balanceSheet && balanceSheet.accounts.length > 0 && (
+            <div className="upload-summary">
+              <strong>Balance Sheet (Net Flow)</strong>
+              <span>Total net flow: {formatCurrency(balanceSheet.totalNetFlow)}</span>
+              <ul className="upload-invalid-list">
+                {balanceSheet.accounts.map((account) => (
+                  <li key={`${account.accountName}-${account.accountType}`}>
+                    {account.accountName} ({account.accountType}) | Net: {formatCurrency(account.netFlow)} | Income:{" "}
+                    {formatCurrency(account.income)} | Expenses: {formatCurrency(account.expenses)} | Transfers:{" "}
+                    {formatCurrency(account.transfers)}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
             </section>
 
@@ -956,6 +1139,11 @@ function App() {
             isLoadingTransactions={isLoadingTransactions}
             transactions={transactions}
             handleDeleteTransaction={handleDeleteTransaction}
+            reviewTransactions={reviewTransactions}
+            isLoadingReviewTransactions={isLoadingReviewTransactions}
+            reviewCategoryEdits={reviewCategoryEdits}
+            setReviewCategoryEdits={setReviewCategoryEdits}
+            handleResolveReviewTransaction={handleResolveReviewTransaction}
           />
         )}
 
@@ -1088,6 +1276,19 @@ function App() {
               recurringCandidates={recurringCandidates}
             />
           </>
+        )}
+
+        {activeSection === "accounts" && (
+          <AccountsSection
+            insightsMonth={insightsMonth}
+            setInsightsMonth={setInsightsMonth}
+            loadBalanceSheet={loadBalanceSheet}
+            isLoadingBalanceSheet={isLoadingBalanceSheet}
+            balanceSheet={balanceSheet}
+            handleCleanupDuplicates={handleCleanupDuplicates}
+            isCleaningDuplicates={isCleaningDuplicates}
+            duplicateCleanupSummary={duplicateCleanupSummary}
+          />
         )}
 
         {error && <p className="error">{error}</p>}

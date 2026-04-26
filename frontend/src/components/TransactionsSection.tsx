@@ -20,6 +20,13 @@ type TransactionsSectionProps = {
   isLoadingTransactions: boolean;
   transactions: Transaction[];
   handleDeleteTransaction: (transaction: Transaction) => Promise<void>;
+  reviewTransactions: Transaction[];
+  isLoadingReviewTransactions: boolean;
+  reviewCategoryEdits: Record<string, string>;
+  setReviewCategoryEdits: (
+    value: Record<string, string> | ((current: Record<string, string>) => Record<string, string>),
+  ) => void;
+  handleResolveReviewTransaction: (transactionId: string, applyToSimilar: boolean) => Promise<void>;
 };
 
 function TransactionsSection({
@@ -38,6 +45,11 @@ function TransactionsSection({
   isLoadingTransactions,
   transactions,
   handleDeleteTransaction,
+  reviewTransactions,
+  isLoadingReviewTransactions,
+  reviewCategoryEdits,
+  setReviewCategoryEdits,
+  handleResolveReviewTransaction,
 }: TransactionsSectionProps) {
   return (
     <section className="transactions-panel">
@@ -143,6 +155,7 @@ function TransactionsSection({
                 <strong>{transaction.description}</strong>
                 <small>
                   {new Date(transaction.date).toLocaleDateString()} - {transaction.category} - {transaction.sourceType}
+                  {transaction.accountName ? ` - ${transaction.accountName}` : ""}
                 </small>
               </div>
               <div className="transaction-actions">
@@ -158,6 +171,52 @@ function TransactionsSection({
           ))}
         </ul>
       )}
+
+      <section className="review-queue-panel">
+        <h3>Needs Review</h3>
+        <p>Low-confidence AI categorization suggestions are listed here.</p>
+        {isLoadingReviewTransactions ? (
+          <p>Loading review queue...</p>
+        ) : reviewTransactions.length === 0 ? (
+          <p>No transactions need review.</p>
+        ) : (
+          <ul className="transaction-list">
+            {reviewTransactions.map((transaction) => (
+              <li key={`review-${transaction.id}`} className="transaction-item">
+                <div>
+                  <strong>{transaction.description}</strong>
+                  <small>
+                    {new Date(transaction.date).toLocaleDateString()} - Suggested: {transaction.category} - Confidence:{" "}
+                    {transaction.categorizationConfidence != null
+                      ? `${Math.round(transaction.categorizationConfidence * 100)}%`
+                      : "N/A"}
+                  </small>
+                </div>
+                <div className="transaction-actions">
+                  <span>{formatCurrency(transaction.amount)}</span>
+                  <input
+                    type="text"
+                    placeholder="Category"
+                    value={reviewCategoryEdits[transaction.id] ?? transaction.category}
+                    onChange={(event) =>
+                      setReviewCategoryEdits((current) => ({
+                        ...current,
+                        [transaction.id]: event.target.value,
+                      }))
+                    }
+                  />
+                  <button type="button" onClick={() => void handleResolveReviewTransaction(transaction.id, false)}>
+                    Approve
+                  </button>
+                  <button type="button" onClick={() => void handleResolveReviewTransaction(transaction.id, true)}>
+                    Apply to Similar
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </section>
   );
 }
