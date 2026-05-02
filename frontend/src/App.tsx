@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Divider from "@mui/material/Divider";
+import Drawer from "@mui/material/Drawer";
+import List from "@mui/material/List";
+import ListItemButton from "@mui/material/ListItemButton";
+import ListItemText from "@mui/material/ListItemText";
+import Paper from "@mui/material/Paper";
+import Typography from "@mui/material/Typography";
 import { usePlaidLink } from "react-plaid-link";
 import "./App.css";
+
+const DRAWER_WIDTH = 260;
 import type {
   CategorizationRule,
   DebtAccount,
@@ -915,30 +926,70 @@ function App() {
   const activeSectionLabel = navItems.find((item) => item.id === activeSection)?.label ?? "Workspace";
 
   return (
-    <main className="app-shell">
+    <Box sx={{ display: "flex", minHeight: "100dvh", bgcolor: "background.default" }}>
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      <aside className="app-sidebar" aria-label="Primary navigation">
-        <h1 className="app-title">Finaryo</h1>
-        <nav className="app-nav">
+      <Drawer
+        variant="permanent"
+        aria-label="Primary navigation"
+        sx={{
+          width: DRAWER_WIDTH,
+          flexShrink: 0,
+          "& .MuiDrawer-paper": {
+            width: DRAWER_WIDTH,
+            boxSizing: "border-box",
+            borderRight: 1,
+            borderColor: "divider",
+          },
+        }}
+      >
+        <Box sx={{ px: 2, pt: 2.5, pb: 1 }}>
+          <Typography variant="h6" component="h1">
+            Finaryo
+          </Typography>
+        </Box>
+        <Divider />
+        <List component="nav" dense sx={{ px: 1, py: 1 }} aria-label="Workspace sections">
           {navItems.map((item) => (
-            <button
+            <ListItemButton
               key={item.id}
-              type="button"
-              className={`app-nav-item ${activeSection === item.id ? "app-nav-item-active" : ""}`}
+              selected={activeSection === item.id}
               onClick={() => setActiveSection(item.id)}
-              aria-current={activeSection === item.id ? "page" : undefined}
+              sx={{ borderRadius: 2, mb: 0.5 }}
             >
-              {item.label}
-            </button>
+              <ListItemText primary={item.label} />
+            </ListItemButton>
           ))}
-        </nav>
-      </aside>
+        </List>
+      </Drawer>
 
-      <section id="main-content" className="panel" tabIndex={-1}>
-        <h2 className="section-title">{activeSectionLabel}</h2>
-        <p className="subtitle">Personal finance workspace</p>
+      <Box
+        id="main-content"
+        component="main"
+        tabIndex={-1}
+        sx={{
+          flexGrow: 1,
+          p: { xs: 2, sm: 3 },
+          overflow: "auto",
+        }}
+      >
+        <Paper
+          elevation={0}
+          sx={{
+            maxWidth: 1200,
+            mx: "auto",
+            p: { xs: 2, sm: 3 },
+            border: 1,
+            borderColor: "divider",
+          }}
+        >
+          <Typography variant="h4" component="h2" className="section-title" sx={{ mt: 0 }}>
+            {activeSectionLabel}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+            Personal finance workspace
+          </Typography>
 
         {activeSection === "dashboard" && (
           <>
@@ -1291,9 +1342,14 @@ function App() {
           />
         )}
 
-        {error && <p className="error">{error}</p>}
-      </section>
-    </main>
+        {error && (
+          <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+        </Paper>
+      </Box>
+    </Box>
   );
 }
 
