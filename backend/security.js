@@ -13,6 +13,8 @@ const envSchema = z.object({
   PLAID_REDIRECT_URI: z.string().optional(),
   APP_ENCRYPTION_KEY: z.string().min(32, "APP_ENCRYPTION_KEY must be at least 32 characters."),
   USER_ID: z.string().default("local-user"),
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  GEMINI_MODEL: z.string().default("gemini-2.0-flash-lite"),
 });
 
 export function loadAndValidateEnv(rawEnv) {

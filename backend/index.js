@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +68,13 @@ const transactionUpdateSchema = z.object({
   amount: z.coerce.number().positive().optional(),
   category: z.string().trim().min(1).max(80).optional(),
   date: z.string().datetime().optional(),
+});
+const reviewTransactionParamsSchema = z.object({
+  id: z.string().min(1),
+});
+const resolveCategorizationSchema = z.object({
+  category: z.string().trim().min(1).max(80),
+  applyToSimilar: z.boolean().optional(),
 });
 const transactionParamsSchema = z.object({
   sourceType: z.enum(["expense", "imported"]),
@@ -225,6 +233,650 @@ function pickRowValue(row, keys) {
   return undefined;
 }
 
+const CATEGORY_WHITELIST = [
+  "Uncategorized",
+  "Food",
+  "Transport",
+  "Groceries",
+  "Shopping",
+  "Bills",
+  "Rent",
+  "Utilities",
+  "Healthcare",
+  "Entertainment",
+  "Travel",
+  "Education",
+  "Income",
+  "Transfer",
+  "Subscriptions",
+  "Insurance",
+  "Debt Payment",
+  "Savings",
+  "Cash Withdrawal",
+  "Fees",
+  "Taxes",
+  "Other",
+];
+
+function normalizeDescriptionForMemory(description) {
+  return String(description ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sanitizeCategory(category, fallbackCategory = "Uncategorized") {
+  const normalized = String(category ?? "").trim();
+  return CATEGORY_WHITELIST.includes(normalized) ? normalized : fallbackCategory;
+}
+
+function buildTransactionFingerprint({ date, description, amount, accountName, accountType }) {
+  const dayKey = new Date(date).toISOString().slice(0, 10);
+  const normalizedDescription = normalizeDescriptionForMemory(description);
+  const normalizedAmount = Number(Number(amount).toFixed(2)).toFixed(2);
+  const normalizedAccount = `${String(accountName ?? "").toLowerCase().trim()}|${String(accountType ?? "")
+    .toLowerCase()
+    .trim()}`;
+  return `${dayKey}|${normalizedAmount}|${normalizedDescription}|${normalizedAccount}`;
+}
+
+function dedupeImportedTransactionsForInsights(rows) {
+  const seen = new Set();
+  const deduped = [];
+  for (const row of rows) {
+    const fingerprint = buildTransactionFingerprint({
+      date: row.date,
+      description: row.description,
+      amount: row.amount,
+      accountName: row.accountName,
+      accountType: row.accountType,
+    });
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    deduped.push(row);
+  }
+  return deduped;
+}
+
+async function reconcileDebtAccountsFromCreditCardImports(userId) {
+  const creditCardRows = await prisma.importedTransaction.findMany({
+    where: { userId, accountType: "credit_card" },
+    orderBy: { date: "asc" },
+  });
+  const byAccount = new Map();
+  for (const row of creditCardRows) {
+    const key = row.accountName || "Credit Card";
+    if (!byAccount.has(key)) {
+      byAccount.set(key, { netFlow: 0 });
+    }
+    byAccount.get(key).netFlow += row.amount;
+  }
+
+  for (const [accountName, summary] of byAccount.entries()) {
+    const estimatedBalance = Math.max(0, Number((-summary.netFlow).toFixed(2)));
+    const minimumPayment = estimatedBalance > 0 ? Math.max(25, Number((estimatedBalance * 0.03).toFixed(2))) : 25;
+    const lender = accountName.split(" ")[0] || "Card Issuer";
+
+    const existing = await prisma.debtAccount.findFirst({
+      where: { userId, name: accountName },
+    });
+    if (existing) {
+      await prisma.debtAccount.update({
+        where: { id: existing.id },
+        data: {
+          balance: estimatedBalance,
+          minimumPayment: Number(minimumPayment.toFixed(2)),
+          lender: existing.lender || lender,
+        },
+      });
+    } else {
+      await prisma.debtAccount.create({
+        data: {
+          userId,
+          name: accountName,
+          lender,
+          balance: estimatedBalance,
+          apr: 0,
+          minimumPayment: Number(minimumPayment.toFixed(2)),
+          dueDay: 1,
+        },
+      });
+    }
+  }
+}
+
+async function classifyCategoryWithGemini({ description, amount }) {
+  if (!runtimeConfig.GEMINI_API_KEY) {
+    return null;
+  }
+  const model = runtimeConfig.GEMINI_MODEL || "gemini-2.0-flash-lite";
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model,
+  )}:generateContent?key=${encodeURIComponent(runtimeConfig.GEMINI_API_KEY)}`;
+  const prompt = [
+    "You categorize finance transactions.",
+    `Allowed categories: ${CATEGORY_WHITELIST.join(", ")}`,
+    `Transaction description: ${description}`,
+    `Transaction amount: ${amount}`,
+    "Return ONLY valid JSON with keys: category (string from allowed list), confidence (0 to 1).",
+  ].join("\n");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4500);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 120,
+        },
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json();
+    const text =
+      payload?.candidates?.[0]?.content?.parts
+        ?.map((part) => part?.text)
+        .filter(Boolean)
+        .join(" ")
+        ?.trim() ?? "";
+    if (!text) {
+      return null;
+    }
+    const jsonTextMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonTextMatch) {
+      return null;
+    }
+    const parsed = JSON.parse(jsonTextMatch[0]);
+    const category = sanitizeCategory(parsed?.category, "Uncategorized");
+    const confidenceRaw = Number(parsed?.confidence);
+    const confidence = Number.isFinite(confidenceRaw)
+      ? Math.min(Math.max(confidenceRaw, 0), 1)
+      : null;
+    return { category, confidence };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeHeaderKey(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function parseAmountValue(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const isNegative = raw.includes("(") || /\bdr\b/i.test(raw) || raw.startsWith("-");
+  const cleaned = raw.replace(/[,$()\s]/g, "").replace(/\b(cr|dr)\b/gi, "");
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const absolute = Math.abs(parsed);
+  return isNegative ? -absolute : absolute;
+}
+
+function findColumnIndex(normalizedHeaders, aliases) {
+  const aliasSet = new Set(aliases.map((alias) => normalizeHeaderKey(alias)));
+  return normalizedHeaders.findIndex((header) => aliasSet.has(header));
+}
+
+function inferAccountTypeFromText(text) {
+  const normalized = text.toLowerCase();
+  if (
+    /(credit card|card statement|card no\.?|card number|card ending|visa|mastercard|amex|american express|discover|statement period|minimum due|total due|payment due date|available credit|credit limit|interest charged on purchases|interest charge:?purchases)/i.test(
+      normalized,
+    )
+  ) {
+    return "credit_card";
+  }
+  if (/(savings|saving account)/i.test(normalized)) {
+    return "savings";
+  }
+  if (/(loan|emi|mortgage|car loan|personal loan)/i.test(normalized)) {
+    return "loan";
+  }
+  // Only classify as cash when explicitly a cash account, not because the statement contains "cashback/cash advance".
+  if (/(cash account|wallet balance|petty cash|cash ledger)/i.test(normalized)) {
+    return "cash";
+  }
+  return "checking";
+}
+
+function sanitizeAccountName(value) {
+  const cleaned = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.slice(0, 80);
+}
+
+function inferBankNameFromText(text) {
+  const normalized = String(text ?? "").toLowerCase();
+  const knownBanks = [
+    { name: "Chase", pattern: /(chase|jpmorgan)/i },
+    { name: "Bank of America", pattern: /(bank of america|bofa)/i },
+    { name: "Wells Fargo", pattern: /(wells fargo)/i },
+    { name: "Citi", pattern: /(citibank|citi)/i },
+    { name: "Capital One", pattern: /(capital one)/i },
+    { name: "American Express", pattern: /(american express|amex)/i },
+    { name: "Discover", pattern: /(discover)/i },
+    { name: "HDFC Bank", pattern: /(hdfc)/i },
+    { name: "ICICI Bank", pattern: /(icici)/i },
+    { name: "SBI", pattern: /(state bank of india|sbi)/i },
+    { name: "Axis Bank", pattern: /(axis bank)/i },
+  ];
+  const match = knownBanks.find((bank) => bank.pattern.test(normalized));
+  return match?.name ?? null;
+}
+
+function isKnownBankNameLikelyPresent(bankName, text) {
+  const normalizedBank = String(bankName ?? "").toLowerCase().trim();
+  const normalizedText = String(text ?? "").toLowerCase();
+  if (!normalizedBank) return false;
+  const aliases = {
+    chase: ["chase", "jpmorgan"],
+    "bank of america": ["bank of america", "bofa"],
+    "wells fargo": ["wells fargo"],
+    citi: ["citibank", "citi"],
+    "capital one": ["capital one"],
+    "american express": ["american express", "amex"],
+    discover: ["discover"],
+    "hdfc bank": ["hdfc"],
+    "icici bank": ["icici"],
+    sbi: ["state bank of india", "sbi"],
+    "axis bank": ["axis bank"],
+  };
+  const tokens = aliases[normalizedBank] ?? [normalizedBank];
+  return tokens.some((token) => normalizedText.includes(token));
+}
+
+async function inferAccountMetadataWithGemini({ fileName, sheetName, cellTexts }) {
+  if (!runtimeConfig.GEMINI_API_KEY) {
+    return null;
+  }
+  const model = runtimeConfig.GEMINI_MODEL || "gemini-flash-lite-latest";
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model,
+  )}:generateContent?key=${encodeURIComponent(runtimeConfig.GEMINI_API_KEY)}`;
+  const sampleText = cellTexts.slice(0, 180).join(" | ").slice(0, 8000);
+  const prompt = [
+    "You classify bank statement account metadata.",
+    "Return ONLY strict JSON with keys:",
+    "bankName (string or null), accountType (one of checking,savings,credit_card,loan,cash),",
+    "accountLabel (string), endingDigits (string or null), confidence (0 to 1).",
+    "If uncertain, still choose best accountType and set lower confidence.",
+    `File name: ${fileName}`,
+    `Sheet name: ${sheetName}`,
+    `Statement text sample: ${sampleText}`,
+  ].join("\n");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 220,
+        },
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const text =
+      payload?.candidates?.[0]?.content?.parts
+        ?.map((part) => part?.text)
+        .filter(Boolean)
+        .join(" ")
+        ?.trim() ?? "";
+    if (!text) return null;
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]);
+    const allowedTypes = new Set(["checking", "savings", "credit_card", "loan", "cash"]);
+    const accountType = allowedTypes.has(parsed?.accountType) ? parsed.accountType : null;
+    const accountLabel = sanitizeAccountName(parsed?.accountLabel);
+    const bankName = sanitizeAccountName(parsed?.bankName ?? "");
+    const endingDigitsRaw = String(parsed?.endingDigits ?? "").trim();
+    const endingDigits = /^\d{2,6}$/.test(endingDigitsRaw) ? endingDigitsRaw : null;
+    const confidenceRaw = Number(parsed?.confidence);
+    const confidence = Number.isFinite(confidenceRaw)
+      ? Math.max(0, Math.min(confidenceRaw, 1))
+      : null;
+    if (!accountType) return null;
+    return {
+      bankName: bankName || null,
+      accountType,
+      accountLabel: accountLabel || null,
+      endingDigits,
+      confidence,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildStableAccountLabel({ bankName, accountType, endingDigits }) {
+  const typeLabelMap = {
+    credit_card: "Credit Card",
+    checking: "Checking",
+    savings: "Savings",
+    loan: "Loan",
+    cash: "Cash",
+  };
+  const base = bankName ? `${bankName} ${typeLabelMap[accountType] ?? "Account"}` : typeLabelMap[accountType] ?? "Account";
+  if (endingDigits) {
+    return `${base} • ${endingDigits}`;
+  }
+  return base;
+}
+
+function isLikelySyntheticMonthLabel(value) {
+  const text = String(value ?? "").toLowerCase().trim();
+  if (!text) return true;
+  const digits = (text.match(/\d/g) ?? []).length;
+  return (
+    /^[a-z]{3,9}\s?\d{4}/i.test(text) ||
+    /^\d{4}\s+\d{2}\s+\d{2}/i.test(text) ||
+    /^\d{4}[-_/]?\d{2}$/i.test(text) ||
+    /(statement|summary|report|period|transaction download|downloaded transactions|export|csv|xlsx)/i.test(
+      text,
+    ) ||
+    digits >= Math.ceil(text.replace(/\s+/g, "").length * 0.45)
+  );
+}
+
+async function inferAccountMetadata({ fileName, sheetName, rows, headerRowIndex }) {
+  const scanLimit = Math.min(rows.length, Math.max(headerRowIndex + 1, 20));
+  const scopeRows = rows.slice(0, scanLimit);
+  const headerRows = rows.slice(0, Math.max(headerRowIndex, 0));
+  const headerCellTexts = headerRows
+    .flatMap((row) => (Array.isArray(row) ? row : []))
+    .map((cell) => String(cell ?? "").trim())
+    .filter(Boolean);
+  const cellTexts = scopeRows
+    .flatMap((row) => (Array.isArray(row) ? row : []))
+    .map((cell) => String(cell ?? "").trim())
+    .filter(Boolean);
+  const scopeText = cellTexts.join(" | ");
+  const headerText = headerCellTexts.join(" | ");
+  const fileStem = String(fileName ?? "Primary")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+
+  let accountName =
+    cellTexts.find((text) => /^account name[:\s-]+/i.test(text))?.replace(/^account name[:\s-]+/i, "") ??
+    cellTexts.find((text) => /^a\/?c name[:\s-]+/i.test(text))?.replace(/^a\/?c name[:\s-]+/i, "") ??
+    null;
+  const inferredBankFromHeader = inferBankNameFromText(`${headerText} ${sheetName} ${fileName}`);
+  const bankName = isKnownBankNameLikelyPresent(inferredBankFromHeader, `${headerText} ${sheetName} ${fileName}`)
+    ? inferredBankFromHeader
+    : null;
+  const accountNumberText = cellTexts.find((text) =>
+    /(account number|a\/?c number|acct number|ending|xxxx|x{2,})/i.test(text),
+  );
+  const hasMaskedPattern = /(x{2,}\d{2,6}|\*{2,}\d{2,6}|ending\s+\d{2,6})/i.test(accountNumberText ?? "");
+  const endingMatch = hasMaskedPattern ? accountNumberText?.match(/(\d{2,6})\s*$/) ?? null : null;
+  const endingDigits = endingMatch?.[1] ?? null;
+
+  if (!accountName) {
+    if (accountNumberText) {
+      const suffix = endingDigits ? ` • ${endingDigits}` : "";
+      accountName = `${sanitizeAccountName(fileStem || sheetName || "Primary")}${suffix}`;
+    }
+  }
+
+  const accountType = inferAccountTypeFromText(`${scopeText} ${sheetName} ${fileName}`);
+  const fallbackName = sanitizeAccountName(fileStem || sheetName || "Primary");
+  const inferredRawName = sanitizeAccountName(accountName || fallbackName || "Primary");
+  const inferredName = isLikelySyntheticMonthLabel(inferredRawName)
+    ? buildStableAccountLabel({ bankName, accountType, endingDigits })
+    : inferredRawName;
+
+  const aiMetadata = await inferAccountMetadataWithGemini({
+    fileName,
+    sheetName,
+    cellTexts,
+  });
+  if (aiMetadata && (aiMetadata.confidence ?? 0) >= 0.65) {
+    const trustedAiBankName = isKnownBankNameLikelyPresent(
+      aiMetadata.bankName,
+      `${headerText} ${sheetName} ${fileName}`,
+    )
+      ? aiMetadata.bankName
+      : null;
+    const aiLabel =
+      aiMetadata.accountLabel ||
+      buildStableAccountLabel({
+        bankName: trustedAiBankName,
+        accountType: aiMetadata.accountType,
+        endingDigits: aiMetadata.endingDigits,
+      });
+    return {
+      accountName: sanitizeAccountName(aiLabel || inferredName || "Primary"),
+      accountType: aiMetadata.accountType,
+    };
+  }
+
+  return {
+    accountName: sanitizeAccountName(inferredName || "Primary"),
+    accountType,
+  };
+}
+
+function isLikelyNoiseRow(description, amount, date, row) {
+  const normalizedDescription = String(description ?? "").toLowerCase().trim();
+  const hasDate = Boolean(date);
+  const hasAmount = Number.isFinite(amount);
+  if (!normalizedDescription && !hasDate && !hasAmount) {
+    return true;
+  }
+  if (
+    /(opening balance|closing balance|previous balance|new balance|available credit|credit limit|minimum due|payment due date|total amount due|statement period|finance charge|interest charged|total credits|total debits|totals?)/i.test(
+      normalizedDescription,
+    )
+  ) {
+    return true;
+  }
+  const rowValues = Array.isArray(row)
+    ? row.map((item) => String(item ?? "").toLowerCase()).join(" | ")
+    : String(row ?? "").toLowerCase();
+  if (
+    /(page \d+ of \d+|customer care|for queries|please pay|late fee|credit score|rewards summary|this is a computer generated statement)/i.test(
+      rowValues,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function inferAccountTypeFromTransactionCorpus({ statementFileName, descriptions, fallbackType }) {
+  const text = `${statementFileName ?? ""} ${descriptions.join(" ")}`.toLowerCase();
+  if (
+    /(payment from chk|interest charged|cash advance|credit card|card no|card ending|minimum due|available credit|total due)/i.test(
+      text,
+    )
+  ) {
+    return "credit_card";
+  }
+  if (/(loan|emi|installment|mortgage)/i.test(text)) {
+    return "loan";
+  }
+  if (/(savings|saving account)/i.test(text)) {
+    return "savings";
+  }
+  return fallbackType || "checking";
+}
+
+function detectStatementHeader(rows) {
+  const MAX_SCAN_ROWS = 30;
+  for (let rowIndex = 0; rowIndex < Math.min(rows.length, MAX_SCAN_ROWS); rowIndex += 1) {
+    const row = Array.isArray(rows[rowIndex]) ? rows[rowIndex] : [];
+    const normalizedHeaders = row.map((cell) => normalizeHeaderKey(cell));
+    if (normalizedHeaders.every((cell) => !cell)) {
+      continue;
+    }
+
+    const dateIndex = findColumnIndex(normalizedHeaders, [
+      "date",
+      "transaction date",
+      "posted date",
+      "booked date",
+      "value date",
+      "txn date",
+      "trans date",
+    ]);
+    const descriptionIndex = findColumnIndex(normalizedHeaders, [
+      "description",
+      "name",
+      "merchant",
+      "details",
+      "memo",
+      "narration",
+      "transaction details",
+      "remarks",
+      "particulars",
+      "transaction description",
+    ]);
+    const amountIndex = findColumnIndex(normalizedHeaders, [
+      "amount",
+      "transaction amount",
+      "value",
+      "amt",
+      "txn amount",
+      "debit amount",
+      "credit amount",
+      "withdrawal amount",
+      "deposit amount",
+      "withdrawal amt",
+      "deposit amt",
+      "dr amount",
+      "cr amount",
+    ]);
+    const debitIndex = findColumnIndex(normalizedHeaders, [
+      "debit",
+      "debit amount",
+      "withdrawal",
+      "withdrawal amount",
+      "withdrawal amt",
+      "dr",
+      "dr amount",
+    ]);
+    const creditIndex = findColumnIndex(normalizedHeaders, [
+      "credit",
+      "credit amount",
+      "deposit",
+      "deposit amount",
+      "deposit amt",
+      "cr",
+      "cr amount",
+    ]);
+    const categoryIndex = findColumnIndex(normalizedHeaders, ["category", "type", "transaction type", "subtype"]);
+
+    const hasDate = dateIndex >= 0;
+    const hasDescription = descriptionIndex >= 0;
+    const hasAmount = amountIndex >= 0 || debitIndex >= 0 || creditIndex >= 0;
+    if (hasDate && hasDescription && hasAmount) {
+      return {
+        headerRowIndex: rowIndex,
+        columns: {
+          dateIndex,
+          descriptionIndex,
+          amountIndex,
+          debitIndex,
+          creditIndex,
+          categoryIndex,
+        },
+      };
+    }
+  }
+  return null;
+}
+
+function detectStatementColumnsWithoutHeader(rows) {
+  const MAX_SCAN_ROWS = Math.min(rows.length, 40);
+  const columnStats = new Map();
+
+  for (let rowIndex = 0; rowIndex < MAX_SCAN_ROWS; rowIndex += 1) {
+    const row = Array.isArray(rows[rowIndex]) ? rows[rowIndex] : [];
+    row.forEach((cell, colIndex) => {
+      const value = String(cell ?? "").trim();
+      if (!value) return;
+      const stats = columnStats.get(colIndex) ?? {
+        dateHits: 0,
+        amountHits: 0,
+        textHits: 0,
+      };
+      if (normalizeExcelDate(cell)) {
+        stats.dateHits += 1;
+      }
+      if (parseAmountValue(cell) != null) {
+        stats.amountHits += 1;
+      }
+      if (/[a-zA-Z]/.test(value)) {
+        stats.textHits += 1;
+      }
+      columnStats.set(colIndex, stats);
+    });
+  }
+
+  const candidates = [...columnStats.entries()].map(([index, stats]) => ({ index, ...stats }));
+  const dateCandidate = candidates.sort((a, b) => b.dateHits - a.dateHits)[0];
+  const amountCandidate = candidates
+    .filter((c) => c.index !== dateCandidate?.index)
+    .sort((a, b) => b.amountHits - a.amountHits)[0];
+  const descriptionCandidate = candidates
+    .filter((c) => c.index !== dateCandidate?.index && c.index !== amountCandidate?.index)
+    .sort((a, b) => b.textHits - a.textHits)[0];
+
+  if (
+    !dateCandidate ||
+    !amountCandidate ||
+    !descriptionCandidate ||
+    dateCandidate.dateHits < 3 ||
+    amountCandidate.amountHits < 3 ||
+    descriptionCandidate.textHits < 3
+  ) {
+    return null;
+  }
+
+  return {
+    headerRowIndex: -1,
+    columns: {
+      dateIndex: dateCandidate.index,
+      descriptionIndex: descriptionCandidate.index,
+      amountIndex: amountCandidate.index,
+      debitIndex: -1,
+      creditIndex: -1,
+      categoryIndex: -1,
+    },
+  };
+}
+
 function normalizeExcelDate(value) {
   if (value == null || value === "") {
     return null;
@@ -233,12 +885,23 @@ function normalizeExcelDate(value) {
     return value.toISOString();
   }
   if (typeof value === "number") {
-    const parsed = XLSX.SSF.parse_date_code(value);
-    if (!parsed) {
+    const parseDateCode = XLSX?.SSF?.parse_date_code;
+    if (typeof parseDateCode === "function") {
+      const parsed = parseDateCode(value);
+      if (!parsed) {
+        return null;
+      }
+      const normalized = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S));
+      return normalized.toISOString();
+    }
+    // Fallback for environments where XLSX.SSF is unavailable.
+    const excelEpoch = Date.UTC(1899, 11, 30);
+    const millis = Math.round(value * 24 * 60 * 60 * 1000);
+    const maybeDateFromSerial = new Date(excelEpoch + millis);
+    if (Number.isNaN(maybeDateFromSerial.getTime())) {
       return null;
     }
-    const normalized = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S));
-    return normalized.toISOString();
+    return maybeDateFromSerial.toISOString();
   }
 
   const maybeDate = new Date(String(value));
@@ -248,16 +911,85 @@ function normalizeExcelDate(value) {
   return maybeDate.toISOString();
 }
 
-function normalizeTransactionRow(row, index) {
-  const description = pickRowValue(row, ["description", "name", "merchant", "details", "memo"]);
-  const amount = pickRowValue(row, ["amount", "transaction amount", "value"]);
-  const date = pickRowValue(row, ["date", "transaction date", "posted date", "booked date"]);
-  const category = pickRowValue(row, ["category", "type"]);
+function normalizeTransactionRow(row, index, columnIndexes = null) {
+  const readCell = (cellIndex) => (cellIndex >= 0 && Array.isArray(row) ? row[cellIndex] : undefined);
+
+  const description =
+    columnIndexes?.descriptionIndex != null
+      ? readCell(columnIndexes.descriptionIndex)
+      : pickRowValue(row, [
+          "description",
+          "name",
+          "merchant",
+          "details",
+          "memo",
+          "narration",
+          "transaction details",
+          "remarks",
+          "particulars",
+        ]);
+  const date =
+    columnIndexes?.dateIndex != null
+      ? readCell(columnIndexes.dateIndex)
+      : pickRowValue(row, [
+          "date",
+          "transaction date",
+          "posted date",
+          "booked date",
+          "value date",
+          "txn date",
+          "trans date",
+        ]);
+  const category =
+    columnIndexes?.categoryIndex != null
+      ? readCell(columnIndexes.categoryIndex)
+      : pickRowValue(row, ["category", "type", "transaction type", "subtype"]);
+
+  let amount;
+  if (columnIndexes) {
+    const directAmount = readCell(columnIndexes.amountIndex);
+    const debit = readCell(columnIndexes.debitIndex);
+    const credit = readCell(columnIndexes.creditIndex);
+
+    if (directAmount !== undefined && String(directAmount).trim() !== "") {
+      amount = parseAmountValue(directAmount);
+    } else {
+      const parsedDebit = parseAmountValue(debit);
+      const parsedCredit = parseAmountValue(credit);
+      if (parsedDebit != null && Math.abs(parsedDebit) > 0) {
+        amount = -Math.abs(parsedDebit);
+      } else if (parsedCredit != null && Math.abs(parsedCredit) > 0) {
+        amount = Math.abs(parsedCredit);
+      }
+    }
+  } else {
+    amount = parseAmountValue(
+      pickRowValue(row, [
+        "amount",
+        "transaction amount",
+        "value",
+        "amt",
+        "debit",
+        "credit",
+        "withdrawal amount",
+        "deposit amount",
+      ]),
+    );
+  }
 
   const normalizedDescription = String(description ?? "").trim();
-  const normalizedAmount = typeof amount === "number" ? amount : Number(String(amount ?? "").replace(/[$,]/g, ""));
+  const normalizedAmount = amount;
   const normalizedDate = normalizeExcelDate(date);
   const normalizedCategory = String(category ?? "").trim();
+
+  if (isLikelyNoiseRow(normalizedDescription, normalizedAmount, normalizedDate, row)) {
+    return { ignored: true };
+  }
+
+  // Ignore non-data rows (headers/footers/empty rows) without polluting invalidRows.
+  if (!normalizedDescription && !normalizedDate && (normalizedAmount == null || !Number.isFinite(normalizedAmount))) {
+    return { ignored: true };
+  }
 
   if (!normalizedDescription || !Number.isFinite(normalizedAmount) || !normalizedDate) {
     return {
@@ -281,7 +1013,7 @@ function normalizeTransactionRow(row, index) {
   };
 }
 
-function parseStatementFile(file) {
+async function parseStatementFile(file) {
   if (!file) {
     const error = new Error("Please upload an Excel or CSV statement file.");
     error.statusCode = 400;
@@ -297,31 +1029,60 @@ function parseStatementFile(file) {
   }
 
   const worksheet = workbook.Sheets[firstSheetName];
-  const rows = XLSX.utils.sheet_to_json(worksheet, {
+  const matrixRows = XLSX.utils.sheet_to_json(worksheet, {
+    header: 1,
     defval: "",
     raw: true,
     blankrows: false,
   });
 
-  if (!rows.length) {
+  if (!matrixRows.length) {
     const error = new Error("Uploaded file is empty.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const detectedHeader = detectStatementHeader(matrixRows);
+  const detectedColumns = detectedHeader ?? detectStatementColumnsWithoutHeader(matrixRows);
+  if (!detectedColumns) {
+    const error = new Error(
+      "Could not detect statement columns. Please include headers for date, description, and amount/debit/credit.",
+    );
     error.statusCode = 400;
     throw error;
   }
 
   const validTransactions = [];
   const invalidRows = [];
+  const dataRows =
+    detectedColumns.headerRowIndex >= 0
+      ? matrixRows.slice(detectedColumns.headerRowIndex + 1)
+      : matrixRows;
 
-  rows.forEach((row, index) => {
-    const result = normalizeTransactionRow(row, index);
+  dataRows.forEach((row, index) => {
+    const sheetRowNumber =
+      detectedColumns.headerRowIndex >= 0
+        ? detectedColumns.headerRowIndex + index + 2
+        : index + 1;
+    const result = normalizeTransactionRow(row, sheetRowNumber - 2, detectedColumns.columns);
+    if (result.ignored) {
+      return;
+    }
     if (result.valid) {
       validTransactions.push(result.transaction);
     } else {
-      invalidRows.push({ rowNumber: result.rowNumber, reason: result.reason });
+      invalidRows.push({ rowNumber: sheetRowNumber, reason: result.reason });
     }
   });
 
-  return { validTransactions, invalidRows };
+  const accountMetadata = await inferAccountMetadata({
+    fileName: file.originalname,
+    sheetName: firstSheetName,
+    rows: matrixRows,
+    headerRowIndex: Math.max(detectedColumns.headerRowIndex, 0),
+  });
+
+  return { validTransactions, invalidRows, accountMetadata };
 }
 
 function getDefaultUserIdOrThrow() {
@@ -448,6 +1209,92 @@ async function applyCategorizationRules({ userId, description, fallbackCategory 
   });
   const match = rules.find((rule) => normalizedDescription.includes(rule.keyword.toLowerCase()));
   return match?.category ?? fallbackCategory;
+}
+
+async function resolveCategorizationDecision({ userId, description, amount, fallbackCategory }) {
+  const normalizedDescription = normalizeDescriptionForMemory(description);
+  const normalizedFallbackCategory = sanitizeCategory(fallbackCategory, "Uncategorized");
+  const amountValue = Number(amount) || 0;
+
+  // Strong deterministic income and internal-transfer guards.
+  if (
+    /(salary|payroll|direct deposit|ach credit|interest credit|employer deposit|salary credit)/i.test(
+      normalizedDescription,
+    ) &&
+    amountValue > 0
+  ) {
+    return {
+      category: "Income",
+      source: "rule",
+      status: "auto_assigned",
+      confidence: 0.99,
+      normalizedDescription,
+    };
+  }
+  if (
+    /(credit card payment|cc payment|card payment|payment thank you|autopay card|visa payment|mastercard payment)/i.test(
+      normalizedDescription,
+    )
+  ) {
+    return {
+      category: "Transfer",
+      source: "rule",
+      status: "auto_assigned",
+      confidence: 0.99,
+      normalizedDescription,
+    };
+  }
+
+  const rules = await prisma.categorizationRule.findMany({
+    where: { userId, isActive: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const matchedRule = rules.find((rule) => normalizedDescription.includes(rule.keyword.toLowerCase()));
+  if (matchedRule) {
+    return {
+      category: sanitizeCategory(matchedRule.category, normalizedFallbackCategory),
+      source: "rule",
+      status: "auto_assigned",
+      confidence: 0.98,
+      normalizedDescription,
+    };
+  }
+
+  const memory = await prisma.merchantCategoryMemory.findFirst({
+    where: { userId, normalizedDescription },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (memory) {
+    return {
+      category: sanitizeCategory(memory.category, normalizedFallbackCategory),
+      source: "memory",
+      status: "auto_assigned",
+      confidence: Math.min(Math.max(memory.confidence ?? 0.9, 0.7), 1),
+      normalizedDescription,
+    };
+  }
+
+  const aiPrediction = await classifyCategoryWithGemini({
+    description: normalizedDescription,
+    amount,
+  });
+  if (!aiPrediction) {
+    return {
+      category: normalizedFallbackCategory,
+      source: "ai",
+      status: "needs_review",
+      confidence: null,
+      normalizedDescription,
+    };
+  }
+  const resolvedCategory = sanitizeCategory(aiPrediction.category, normalizedFallbackCategory);
+  return {
+    category: resolvedCategory,
+    source: "ai",
+    status: aiPrediction.confidence != null && aiPrediction.confidence >= 0.75 ? "auto_assigned" : "needs_review",
+    confidence: aiPrediction.confidence != null ? Number(aiPrediction.confidence.toFixed(2)) : null,
+    normalizedDescription,
+  };
 }
 
 function tryExtractPayslipData(text) {
@@ -587,6 +1434,11 @@ app.get("/api/transactions", async (req, res, next) => {
         amount: transaction.amount,
         category: transaction.category,
         date: transaction.date.toISOString(),
+        accountName: transaction.accountName,
+        accountType: transaction.accountType,
+        categorizationSource: transaction.categorizationSource,
+        categorizationStatus: transaction.categorizationStatus,
+        categorizationConfidence: transaction.categorizationConfidence,
       })),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
@@ -620,18 +1472,61 @@ app.patch("/api/transactions/:sourceType/:id", async (req, res, next) => {
         return res.status(404).json({ error: "Transaction not found." });
       }
     } else {
+      const existingImport =
+        payload.category || payload.description
+          ? await prisma.importedTransaction.findFirst({
+              where: { id: params.id, userId },
+            })
+          : null;
       const updatedImport = await prisma.importedTransaction.updateMany({
         where: { id: params.id, userId },
         data: {
-          ...(payload.description ? { description: payload.description } : {}),
+          ...(payload.description
+            ? {
+                description: payload.description,
+                normalizedDescription: normalizeDescriptionForMemory(payload.description),
+              }
+            : {}),
           ...(typeof payload.amount === "number" ? { amount: Number(payload.amount.toFixed(2)) } : {}),
-          ...(payload.category ? { category: payload.category } : {}),
+          ...(payload.category
+            ? {
+                category: payload.category,
+                categorizationSource: "manual",
+                categorizationStatus: "approved",
+                categorizationConfidence: 1,
+              }
+            : {}),
           ...(payload.date ? { date: new Date(payload.date) } : {}),
         },
       });
 
       if (updatedImport.count === 0) {
         return res.status(404).json({ error: "Transaction not found." });
+      }
+
+      if (payload.category && existingImport) {
+        const normalizedDescription =
+          existingImport.normalizedDescription || normalizeDescriptionForMemory(existingImport.description);
+        await prisma.merchantCategoryMemory.upsert({
+          where: {
+            userId_normalizedDescription: {
+              userId,
+              normalizedDescription,
+            },
+          },
+          update: {
+            category: sanitizeCategory(payload.category, payload.category),
+            confidence: 1,
+            source: "manual_edit",
+          },
+          create: {
+            userId,
+            normalizedDescription,
+            category: sanitizeCategory(payload.category, payload.category),
+            confidence: 1,
+            source: "manual_edit",
+          },
+        });
       }
     }
 
@@ -663,6 +1558,274 @@ app.delete("/api/transactions/:sourceType/:id", async (req, res, next) => {
     }
 
     return res.status(204).send();
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get("/api/transactions/review", async (_req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const reviewTransactions = await prisma.importedTransaction.findMany({
+      where: { userId, categorizationStatus: "needs_review" },
+      orderBy: { date: "desc" },
+    });
+    return res.json({
+      data: reviewTransactions.map((transaction) => ({
+        id: transaction.id,
+        sourceType: "imported",
+        description: transaction.description,
+        amount: transaction.amount,
+        category: transaction.category,
+        date: transaction.date.toISOString(),
+        accountName: transaction.accountName,
+        accountType: transaction.accountType,
+        categorizationSource: transaction.categorizationSource,
+        categorizationStatus: transaction.categorizationStatus,
+        categorizationConfidence: transaction.categorizationConfidence,
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post("/api/transactions/reclassify-existing", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const onlyUncategorized = req.query?.onlyUncategorized === "true";
+    const whereClause = {
+      userId,
+      ...(onlyUncategorized ? { category: "Uncategorized" } : {}),
+    };
+    const existingTransactions = await prisma.importedTransaction.findMany({
+      where: whereClause,
+      orderBy: { date: "desc" },
+    });
+
+    let updatedCount = 0;
+    let autoAssignedCount = 0;
+    let needsReviewCount = 0;
+
+    for (const transaction of existingTransactions) {
+      const categorization = await resolveCategorizationDecision({
+        userId,
+        description: transaction.description,
+        amount: transaction.amount,
+        fallbackCategory: transaction.category || "Uncategorized",
+      });
+
+      const result = await prisma.importedTransaction.updateMany({
+        where: { id: transaction.id, userId },
+        data: {
+          normalizedDescription: categorization.normalizedDescription,
+          category: categorization.category,
+          categorizationSource: categorization.source,
+          categorizationStatus: categorization.status,
+          categorizationConfidence: categorization.confidence,
+        },
+      });
+      if (result.count > 0) {
+        updatedCount += result.count;
+        if (categorization.status === "auto_assigned") {
+          autoAssignedCount += 1;
+        } else if (categorization.status === "needs_review") {
+          needsReviewCount += 1;
+        }
+      }
+    }
+
+    return res.json({
+      data: {
+        scannedCount: existingTransactions.length,
+        updatedCount,
+        autoAssignedCount,
+        needsReviewCount,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post("/api/transactions/reinfer-accounts", async (_req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const imports = await prisma.importedTransaction.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        statementFileName: true,
+        description: true,
+        accountName: true,
+        accountType: true,
+      },
+    });
+    const byStatement = new Map();
+    for (const row of imports) {
+      const key = row.statementFileName || "statement";
+      if (!byStatement.has(key)) {
+        byStatement.set(key, []);
+      }
+      byStatement.get(key).push(row);
+    }
+
+    let updatedCount = 0;
+    for (const [statementFileName, rows] of byStatement.entries()) {
+      const descriptions = rows.map((row) => row.description).filter(Boolean);
+      const inferredType = inferAccountTypeFromTransactionCorpus({
+        statementFileName,
+        descriptions,
+        fallbackType: rows[0]?.accountType ?? "checking",
+      });
+      const bankName = inferBankNameFromText(`${statementFileName} ${descriptions.join(" ")}`);
+      const endingMatch = statementFileName.match(/(\d{3,6})(?=\.[a-z]+$|$)/i) ?? null;
+      const endingDigits = endingMatch?.[1] ?? null;
+      const inferredName = buildStableAccountLabel({
+        bankName,
+        accountType: inferredType,
+        endingDigits,
+      });
+      const ids = rows.map((row) => row.id);
+      const updateResult = await prisma.importedTransaction.updateMany({
+        where: { userId, id: { in: ids } },
+        data: {
+          accountType: inferredType,
+          accountName: inferredName,
+        },
+      });
+      updatedCount += updateResult.count;
+    }
+    await reconcileDebtAccountsFromCreditCardImports(userId);
+
+    return res.json({
+      data: {
+        statementGroups: byStatement.size,
+        updatedCount,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post("/api/transactions/cleanup-duplicates", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const dryRun = req.query?.dryRun === "true";
+    const imported = await prisma.importedTransaction.findMany({
+      where: { userId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        date: true,
+        description: true,
+        amount: true,
+        accountName: true,
+        accountType: true,
+      },
+    });
+
+    const seen = new Set();
+    const duplicateIds = [];
+    for (const row of imported) {
+      const fingerprint = buildTransactionFingerprint({
+        date: row.date,
+        description: row.description,
+        amount: row.amount,
+        accountName: row.accountName,
+        accountType: row.accountType,
+      });
+      if (seen.has(fingerprint)) {
+        duplicateIds.push(row.id);
+      } else {
+        seen.add(fingerprint);
+      }
+    }
+
+    let deletedCount = 0;
+    if (!dryRun && duplicateIds.length > 0) {
+      const deleteResult = await prisma.importedTransaction.deleteMany({
+        where: { userId, id: { in: duplicateIds } },
+      });
+      deletedCount = deleteResult.count;
+    }
+
+    return res.json({
+      data: {
+        scannedCount: imported.length,
+        uniqueCount: seen.size,
+        duplicateCount: duplicateIds.length,
+        deletedCount,
+        dryRun,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.patch("/api/transactions/imported/:id/categorization", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const params = reviewTransactionParamsSchema.parse(req.params ?? {});
+    const payload = resolveCategorizationSchema.parse(req.body ?? {});
+
+    const existing = await prisma.importedTransaction.findFirst({
+      where: { id: params.id, userId },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: "Transaction not found." });
+    }
+
+    const normalizedDescription = existing.normalizedDescription || normalizeDescriptionForMemory(existing.description);
+    const normalizedCategory = sanitizeCategory(payload.category, payload.category);
+
+    const updateManyResult = await prisma.importedTransaction.updateMany({
+      where: {
+        userId,
+        ...(payload.applyToSimilar
+          ? { normalizedDescription }
+          : { id: params.id }),
+      },
+      data: {
+        category: normalizedCategory,
+        categorizationSource: payload.applyToSimilar ? "memory" : "manual",
+        categorizationStatus: "approved",
+        categorizationConfidence: payload.applyToSimilar ? 0.95 : 1,
+      },
+    });
+
+    await prisma.merchantCategoryMemory.upsert({
+      where: {
+        userId_normalizedDescription: {
+          userId,
+          normalizedDescription,
+        },
+      },
+      update: {
+        category: normalizedCategory,
+        confidence: payload.applyToSimilar ? 0.95 : 1,
+        source: "manual_review",
+      },
+      create: {
+        userId,
+        normalizedDescription,
+        category: normalizedCategory,
+        confidence: payload.applyToSimilar ? 0.95 : 1,
+        source: "manual_review",
+      },
+    });
+
+    return res.json({
+      message: payload.applyToSimilar
+        ? "Categorization applied to similar transactions."
+        : "Categorization updated.",
+      data: {
+        updatedCount: updateManyResult.count,
+      },
+    });
   } catch (error) {
     return next(error);
   }
@@ -1132,17 +2295,27 @@ app.get("/api/insights/monthly", async (req, res, next) => {
     if (!monthRange) {
       return res.status(400).json({ error: "month must use YYYY-MM format." });
     }
-    const [expenses, imported, paydays] = await Promise.all([
+    const [expenses, importedRaw, paydays] = await Promise.all([
       prisma.expense.findMany({ where: { userId, createdAt: { gte: monthRange.start, lt: monthRange.end } } }),
       prisma.importedTransaction.findMany({ where: { userId, date: { gte: monthRange.start, lt: monthRange.end } } }),
       prisma.paydayEvent.findMany({ where: { userId, date: { gte: monthRange.start, lt: monthRange.end } } }),
     ]);
+    const imported = dedupeImportedTransactionsForInsights(importedRaw);
 
-    const expenseTotal = [...expenses, ...imported].reduce((sum, row) => sum + row.amount, 0);
-    const incomeTotal = paydays.reduce((sum, row) => sum + row.expectedAmount, 0);
+    const importedIncome = imported.filter((row) => row.category === "Income").reduce((sum, row) => sum + row.amount, 0);
+    const importedExpense = imported
+      .filter((row) => row.category !== "Income" && row.category !== "Transfer")
+      .reduce((sum, row) => sum + Math.abs(row.amount), 0);
+    const expenseTotal = expenses.reduce((sum, row) => sum + row.amount, 0) + importedExpense;
+    const incomeTotal = paydays.reduce((sum, row) => sum + row.expectedAmount, 0) + importedIncome;
     const byCategory = new Map();
-    for (const row of [...expenses.map((x) => ({ category: x.category, amount: x.amount })), ...imported]) {
-      byCategory.set(row.category, (byCategory.get(row.category) ?? 0) + row.amount);
+    for (const row of [
+      ...expenses.map((x) => ({ category: x.category, amount: x.amount })),
+      ...imported
+        .filter((x) => x.category !== "Transfer")
+        .map((x) => ({ category: x.category, amount: Math.abs(x.amount) })),
+    ]) {
+      byCategory.set(row.category, (byCategory.get(row.category) ?? 0) + Math.abs(row.amount));
     }
     const topCategories = [...byCategory.entries()]
       .map(([category, amount]) => ({ category, amount: Number(amount.toFixed(2)) }))
@@ -1156,6 +2329,63 @@ app.get("/api/insights/monthly", async (req, res, next) => {
         incomeTotal: Number(incomeTotal.toFixed(2)),
         net: Number((incomeTotal - expenseTotal).toFixed(2)),
         topCategories,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get("/api/insights/balance-sheet", async (req, res, next) => {
+  try {
+    const userId = getDefaultUserIdOrThrow();
+    const month = typeof req.query.month === "string" ? req.query.month : null;
+    const monthRange = month ? getMonthDateRange(month) : null;
+    if (month && !monthRange) {
+      return res.status(400).json({ error: "month must use YYYY-MM format." });
+    }
+    const importedRaw = await prisma.importedTransaction.findMany({
+      where: {
+        userId,
+        ...(monthRange ? { date: { gte: monthRange.start, lt: monthRange.end } } : {}),
+      },
+      orderBy: { date: "asc" },
+    });
+    const imported = dedupeImportedTransactionsForInsights(importedRaw);
+
+    const accountSummary = new Map();
+    for (const row of imported) {
+      const key = `${row.accountName}::${row.accountType}`;
+      const current = accountSummary.get(key) ?? {
+        accountName: row.accountName,
+        accountType: row.accountType,
+        netFlow: 0,
+        income: 0,
+        expenses: 0,
+        transfers: 0,
+      };
+      const amount = Number(row.amount) || 0;
+      current.netFlow += amount;
+      if (row.category === "Income") current.income += Math.max(amount, 0);
+      else if (row.category === "Transfer") current.transfers += Math.abs(amount);
+      else current.expenses += Math.abs(amount);
+      accountSummary.set(key, current);
+    }
+
+    const accounts = [...accountSummary.values()].map((row) => ({
+      ...row,
+      netFlow: Number(row.netFlow.toFixed(2)),
+      income: Number(row.income.toFixed(2)),
+      expenses: Number(row.expenses.toFixed(2)),
+      transfers: Number(row.transfers.toFixed(2)),
+    }));
+    const totalNetFlow = accounts.reduce((sum, row) => sum + row.netFlow, 0);
+
+    return res.json({
+      data: {
+        month: month ?? null,
+        accounts,
+        totalNetFlow: Number(totalNetFlow.toFixed(2)),
       },
     });
   } catch (error) {
@@ -1473,34 +2703,114 @@ app.post("/api/plaid/transactions/sync", async (req, res, next) => {
 
 app.post("/api/transactions/upload", statementUpload.single("statement"), async (req, res, next) => {
   try {
-    const parsed = parseStatementFile(req.file);
+    if (!req.file?.buffer) {
+      return res.status(400).json({ error: "Missing statement file data." });
+    }
+    const parsed = await parseStatementFile(req.file);
     const userId = getDefaultUserIdOrThrow();
     const statementFileName = req.file?.originalname ?? "statement";
+    const statementFileHash = createHash("sha256").update(req.file.buffer).digest("hex");
+    const existingImport = await prisma.statementImport.findFirst({
+      where: { userId, fileHash: statementFileHash },
+    });
+    if (existingImport) {
+      return res.status(200).json({
+        data: {
+          importedCount: 0,
+          skippedCount: parsed.invalidRows.length,
+          duplicateCount: parsed.validTransactions.length,
+          autoCategorizedCount: 0,
+          needsReviewCount: 0,
+          accountName: parsed.accountMetadata?.accountName ?? "Primary",
+          accountType: parsed.accountMetadata?.accountType ?? "checking",
+          transactions: [],
+          invalidRows: parsed.invalidRows,
+          duplicateReason: "This statement file was already imported (same file hash).",
+        },
+      });
+    }
+    const accountName = parsed.accountMetadata?.accountName ?? "Primary";
+    const accountType = parsed.accountMetadata?.accountType ?? "checking";
     const savedTransactions = [];
+    let duplicateCount = 0;
+    const seenFingerprintsInFile = new Set();
     for (const transaction of parsed.validTransactions) {
-      const resolvedCategory = await applyCategorizationRules({
+      const transactionFingerprint = buildTransactionFingerprint({
+        date: transaction.date,
+        description: transaction.description,
+        amount: transaction.amount,
+        accountName,
+        accountType,
+      });
+      if (seenFingerprintsInFile.has(transactionFingerprint)) {
+        duplicateCount += 1;
+        continue;
+      }
+      seenFingerprintsInFile.add(transactionFingerprint);
+      const existingTransaction = await prisma.importedTransaction.findFirst({
+        where: {
+          userId,
+          transactionFingerprint,
+        },
+        select: { id: true },
+      });
+      if (existingTransaction) {
+        duplicateCount += 1;
+        continue;
+      }
+      const categorization = await resolveCategorizationDecision({
         userId,
         description: transaction.description,
+        amount: transaction.amount,
         fallbackCategory: transaction.category,
       });
       const saved = await prisma.importedTransaction.create({
         data: {
           userId,
           statementFileName,
+          statementFileHash,
+          accountName,
+          accountType,
           date: new Date(transaction.date),
           description: transaction.description,
+          normalizedDescription: categorization.normalizedDescription,
+          transactionFingerprint,
           amount: transaction.amount,
-          category: resolvedCategory,
+          category: categorization.category,
+          categorizationSource: categorization.source,
+          categorizationStatus: categorization.status,
+          categorizationConfidence: categorization.confidence,
           source: transaction.source,
         },
       });
       savedTransactions.push(saved);
     }
+    await prisma.statementImport.create({
+      data: {
+        userId,
+        statementFileName,
+        fileHash: statementFileHash,
+        importedCount: savedTransactions.length,
+        duplicateCount,
+      },
+    });
+    await reconcileDebtAccountsFromCreditCardImports(userId);
+    const autoCategorizedCount = savedTransactions.filter(
+      (transaction) => transaction.categorizationStatus === "auto_assigned",
+    ).length;
+    const needsReviewCount = savedTransactions.filter(
+      (transaction) => transaction.categorizationStatus === "needs_review",
+    ).length;
 
     return res.status(201).json({
       data: {
         importedCount: savedTransactions.length,
         skippedCount: parsed.invalidRows.length,
+        duplicateCount,
+        autoCategorizedCount,
+        needsReviewCount,
+        accountName,
+        accountType,
         transactions: savedTransactions.map((transaction) => ({
           id: transaction.id,
           date: transaction.date.toISOString(),
@@ -1508,6 +2818,11 @@ app.post("/api/transactions/upload", statementUpload.single("statement"), async 
           amount: transaction.amount,
           category: transaction.category,
           source: transaction.source,
+          accountName: transaction.accountName,
+          accountType: transaction.accountType,
+          categorizationSource: transaction.categorizationSource,
+          categorizationStatus: transaction.categorizationStatus,
+          categorizationConfidence: transaction.categorizationConfidence,
         })),
         invalidRows: parsed.invalidRows,
       },

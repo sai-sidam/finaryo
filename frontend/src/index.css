@@ -1,9 +1,4 @@
 :root {
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-  color: #f3f4f6;
-  background: linear-gradient(160deg, #0f172a 0%, #111827 50%, #0b1220 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -17,25 +12,4 @@
 body {
   margin: 0;
   min-width: 320px;
-}
-
-button {
-  border-radius: 10px;
-  border: 1px solid #4b5563;
-  padding: 0.65rem 1rem;
-  font-size: 0.95rem;
-  font-weight: 700;
-  background-color: #2563eb;
-  color: #fff;
-  cursor: pointer;
-  transition: background-color 0.2s ease;
-}
-
-button:hover:not(:disabled) {
-  background-color: #1d4ed8;
-}
-
-button:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
 }

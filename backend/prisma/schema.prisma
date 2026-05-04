@@ -16,6 +16,8 @@ model User {
   updatedAt            DateTime              @updatedAt
   expenses             Expense[]
   importedTransactions ImportedTransaction[]
+  statementImports     StatementImport[]
+  merchantMemories     MerchantCategoryMemory[]
   paydayEvents         PaydayEvent[]
   debtAccounts         DebtAccount[]
   handLoans            HandLoan[]
@@ -37,19 +39,72 @@ model Expense {
   @@index([userId, createdAt])
 }
 
+enum CategorizationSource {
+  rule
+  memory
+  ai
+  manual
+}
+
+enum CategorizationStatus {
+  auto_assigned
+  needs_review
+  approved
+}
+
 model ImportedTransaction {
   id                String   @id @default(cuid())
   userId            String
   statementFileName String
+  statementFileHash String?
+  accountName       String   @default("Primary")
+  accountType       String   @default("checking")
   date              DateTime
   description       String
+  normalizedDescription String @default("")
+  transactionFingerprint String @default("")
   amount            Float
   category          String
+  categorizationSource CategorizationSource @default(ai)
+  categorizationStatus CategorizationStatus @default(needs_review)
+  categorizationConfidence Float?
   source            String
   createdAt         DateTime @default(now())
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, date])
+  @@index([userId, accountName, date])
+  @@index([userId, transactionFingerprint])
+  @@index([userId, categorizationStatus, createdAt])
+}
+
+model StatementImport {
+  id            String   @id @default(cuid())
+  userId        String
+  statementFileName String
+  fileHash      String
+  importedCount Int      @default(0)
+  duplicateCount Int     @default(0)
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fileHash])
+  @@index([userId, createdAt])
+}
+
+model MerchantCategoryMemory {
+  id                    String   @id @default(cuid())
+  userId                String
+  normalizedDescription String
+  category              String
+  confidence            Float    @default(1)
+  source                String   @default("manual")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, normalizedDescription])
+  @@index([userId, category])
 }
 
 model PaydayEvent {

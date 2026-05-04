@@ -1,3 +1,5 @@
+import Chip from "@mui/material/Chip";
+
 type StatPillProps = {
   label: string;
   value: string;
@@ -5,9 +7,12 @@ type StatPillProps = {
 
 function StatPill({ label, value }: StatPillProps) {
   return (
-    <span className="stat-pill">
-      <strong>{label}:</strong> {value}
-    </span>
+    <Chip
+      size="small"
+      variant="outlined"
+      label={`${label}: ${value}`}
+      sx={{ fontVariantNumeric: "tabular-nums" }}
+    />
   );
 }
 
