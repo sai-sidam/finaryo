@@ -1,9 +1,15 @@
+import Typography from "@mui/material/Typography";
+
 type EmptyStateProps = {
   message: string;
 };
 
 function EmptyState({ message }: EmptyStateProps) {
-  return <p className="empty-state">{message}</p>;
+  return (
+    <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
+      {message}
+    </Typography>
+  );
 }
 
 export default EmptyState;

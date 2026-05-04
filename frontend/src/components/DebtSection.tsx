@@ -1,10 +1,25 @@
 import type { FormEvent } from "react";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Card from "@mui/material/Card";
+import CardContent from "@mui/material/CardContent";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import MenuItem from "@mui/material/MenuItem";
+import Paper from "@mui/material/Paper";
+import Select from "@mui/material/Select";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 import type { DebtAccount, DebtProjection, HandLoan } from "../types";
 import { formatCurrency } from "../utils";
 import EmptyState from "./ui/EmptyState";
 import SectionHeader from "./ui/SectionHeader";
 import StatPill from "./ui/StatPill";
-import Card from "./ui/Card";
 
 type DebtSectionProps = {
   debtName: string;
@@ -100,144 +115,224 @@ function DebtSection(props: DebtSectionProps) {
   } = props;
 
   return (
-    <section className="debt-panel">
-      <Card>
-        <SectionHeader
-          title="Debt Accounts & Hand Loans"
-          subtitle="Track balances, APR, and payoff strategy for debts plus personal loans."
-        />
-        <form className="debt-form" onSubmit={(event) => void handleDebtSubmit(event)}>
-          <input type="text" value={debtName} onChange={(event) => setDebtName(event.target.value)} placeholder="Debt name" required />
-          <input type="text" value={debtLender} onChange={(event) => setDebtLender(event.target.value)} placeholder="Lender (optional)" />
-          <input type="number" value={debtBalance} onChange={(event) => setDebtBalance(event.target.value)} placeholder="Balance" min="0.01" step="0.01" required />
-          <input type="number" value={debtApr} onChange={(event) => setDebtApr(event.target.value)} placeholder="APR %" min="0" max="100" step="0.01" required />
-          <input type="number" value={debtMinimumPayment} onChange={(event) => setDebtMinimumPayment(event.target.value)} placeholder="Minimum payment" min="0.01" step="0.01" required />
-          <input type="number" value={debtDueDay} onChange={(event) => setDebtDueDay(event.target.value)} placeholder="Due day (1-31)" min="1" max="31" required />
-          <button type="submit">{editingDebtId ? "Update Debt" : "Add Debt"}</button>
-        </form>
+    <Stack component="section" spacing={3}>
+      <Card variant="outlined" sx={{ borderRadius: 2 }}>
+        <CardContent>
+          <SectionHeader
+            title="Debt accounts & hand loans"
+            subtitle="Track balances, APR, and payoff strategy for debts plus personal loans."
+          />
+          <Box component="form" onSubmit={(event) => void handleDebtSubmit(event)}>
+            <Stack spacing={2}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={2} useFlexGap sx={{ flexWrap: "wrap" }}>
+                <TextField label="Debt name" value={debtName} onChange={(e) => setDebtName(e.target.value)} required size="small" sx={{ flex: 1, minWidth: 160 }} />
+                <TextField label="Lender (optional)" value={debtLender} onChange={(e) => setDebtLender(e.target.value)} size="small" sx={{ flex: 1, minWidth: 160 }} />
+                <TextField label="Balance" type="number" value={debtBalance} onChange={(e) => setDebtBalance(e.target.value)} required size="small" slotProps={{ htmlInput: { min: "0.01", step: "0.01" } }} sx={{ minWidth: 120 }} />
+                <TextField label="APR %" type="number" value={debtApr} onChange={(e) => setDebtApr(e.target.value)} required size="small" slotProps={{ htmlInput: { min: 0, max: 100, step: "0.01" } }} sx={{ minWidth: 100 }} />
+                <TextField label="Minimum payment" type="number" value={debtMinimumPayment} onChange={(e) => setDebtMinimumPayment(e.target.value)} required size="small" slotProps={{ htmlInput: { min: "0.01", step: "0.01" } }} sx={{ minWidth: 140 }} />
+                <TextField label="Due day (1–31)" type="number" value={debtDueDay} onChange={(e) => setDebtDueDay(e.target.value)} required size="small" slotProps={{ htmlInput: { min: 1, max: 31 } }} sx={{ minWidth: 120 }} />
+              </Stack>
+              <Button type="submit" variant="contained" sx={{ alignSelf: "flex-start" }}>
+                {editingDebtId ? "Update debt" : "Add debt"}
+              </Button>
+            </Stack>
+          </Box>
+        </CardContent>
       </Card>
 
       {isLoadingDebts ? (
-        <p>Loading debt accounts...</p>
+        <Typography variant="body2">Loading debt accounts…</Typography>
       ) : debts.length === 0 ? (
         <EmptyState message="No debt accounts yet." />
       ) : (
-        <ul className="debt-list">
+        <Stack spacing={1.5}>
           {debts.map((debt) => (
-            <li key={debt.id} className="debt-item">
-              <div>
-                <strong>{debt.name}</strong>
-                <small>
-                  APR {debt.apr}% - Min {formatCurrency(debt.minimumPayment)} - Due day {debt.dueDay}
-                </small>
-              </div>
-              <div className="debt-item-actions">
-                <span>{formatCurrency(debt.balance)}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingDebtId(debt.id);
-                    setDebtName(debt.name);
-                    setDebtLender(debt.lender ?? "");
-                    setDebtBalance(String(debt.balance));
-                    setDebtApr(String(debt.apr));
-                    setDebtMinimumPayment(String(debt.minimumPayment));
-                    setDebtDueDay(String(debt.dueDay));
-                  }}
-                >
-                  Edit
-                </button>
-                <button type="button" onClick={() => void handleDeleteDebt(debt.id)}>
-                  Delete
-                </button>
-              </div>
-            </li>
+            <Paper key={debt.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+              <Stack spacing={1}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  {debt.name}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  APR {debt.apr}% · Min {formatCurrency(debt.minimumPayment)} · Due day {debt.dueDay}
+                </Typography>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
+                  <Typography variant="body1" sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>
+                    {formatCurrency(debt.balance)}
+                  </Typography>
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => {
+                        setEditingDebtId(debt.id);
+                        setDebtName(debt.name);
+                        setDebtLender(debt.lender ?? "");
+                        setDebtBalance(String(debt.balance));
+                        setDebtApr(String(debt.apr));
+                        setDebtMinimumPayment(String(debt.minimumPayment));
+                        setDebtDueDay(String(debt.dueDay));
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button size="small" color="error" variant="outlined" onClick={() => void handleDeleteDebt(debt.id)}>
+                      Delete
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Stack>
+            </Paper>
           ))}
-        </ul>
+        </Stack>
       )}
 
-      <div className="projection-controls">
-        <select value={projectionStrategy} onChange={(event) => setProjectionStrategy(event.target.value as "avalanche" | "snowball")}>
-          <option value="avalanche">Avalanche</option>
-          <option value="snowball">Snowball</option>
-        </select>
-        <input type="number" value={projectionBudget} onChange={(event) => setProjectionBudget(event.target.value)} placeholder="Optional monthly budget" min="0.01" step="0.01" />
-        <button type="button" onClick={() => void loadDebtProjection()}>
-          Refresh Projection
-        </button>
-      </div>
-      {isLoadingProjection ? (
-        <p>Calculating projection...</p>
-      ) : projection ? (
-        <div className="projection-summary">
-          <strong>{projection.strategy} payoff projection</strong>
-          <StatPill label="Debts" value={String(projection.debtCount)} />
-          <StatPill label="Monthly budget" value={formatCurrency(projection.monthlyBudget)} />
-          <StatPill label="Months to payoff" value={String(projection.monthsToPayoff)} />
-          <StatPill label="Estimated interest" value={formatCurrency(projection.estimatedInterest)} />
-          {projection.payoffOrderNames.length > 0 && <span>Payoff order: {projection.payoffOrderNames.join(" -> ")}</span>}
-        </div>
-      ) : null}
+      <Accordion variant="outlined" sx={{ borderRadius: 2 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="proj-content" id="proj-header">
+          <Typography variant="subtitle2">Payoff projection</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Stack spacing={2}>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ alignItems: { sm: "center" } }}>
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel id="strategy-label">Strategy</InputLabel>
+                <Select
+                  labelId="strategy-label"
+                  label="Strategy"
+                  value={projectionStrategy}
+                  onChange={(event) => setProjectionStrategy(event.target.value as "avalanche" | "snowball")}
+                >
+                  <MenuItem value="avalanche">Avalanche</MenuItem>
+                  <MenuItem value="snowball">Snowball</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField
+                label="Optional monthly budget"
+                type="number"
+                value={projectionBudget}
+                onChange={(event) => setProjectionBudget(event.target.value)}
+                size="small"
+                slotProps={{ htmlInput: { min: "0.01", step: "0.01" } }}
+                sx={{ minWidth: 200 }}
+              />
+              <Button type="button" variant="outlined" onClick={() => void loadDebtProjection()}>
+                Refresh projection
+              </Button>
+            </Stack>
+            {isLoadingProjection ? (
+              <Typography variant="body2">Calculating projection…</Typography>
+            ) : projection ? (
+              <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  {projection.strategy} payoff projection
+                </Typography>
+                <Stack direction="row" spacing={1} useFlexGap sx={{ mb: 1, flexWrap: "wrap" }}>
+                  <StatPill label="Debts" value={String(projection.debtCount)} />
+                  <StatPill label="Monthly budget" value={formatCurrency(projection.monthlyBudget)} />
+                  <StatPill label="Months to payoff" value={String(projection.monthsToPayoff)} />
+                  <StatPill label="Estimated interest" value={formatCurrency(projection.estimatedInterest)} />
+                </Stack>
+                {projection.payoffOrderNames.length > 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Payoff order: {projection.payoffOrderNames.join(" → ")}
+                  </Typography>
+                ) : null}
+              </Paper>
+            ) : null}
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
 
-      <form className="hand-loan-form" onSubmit={(event) => void handleHandLoanSubmit(event)}>
-        <select value={loanDirection} onChange={(event) => setLoanDirection(event.target.value as "borrowed" | "lent")}>
-          <option value="borrowed">Borrowed</option>
-          <option value="lent">Lent</option>
-        </select>
-        <input type="text" value={loanCounterparty} onChange={(event) => setLoanCounterparty(event.target.value)} placeholder="Counterparty" required />
-        <input type="number" value={loanPrincipal} onChange={(event) => setLoanPrincipal(event.target.value)} placeholder="Principal" min="0.01" step="0.01" required />
-        <input type="date" value={loanDueDate} onChange={(event) => setLoanDueDate(event.target.value)} />
-        <select value={loanStatus} onChange={(event) => setLoanStatus(event.target.value as "active" | "paid")}>
-          <option value="active">Active</option>
-          <option value="paid">Paid</option>
-        </select>
-        <input type="text" value={loanNote} onChange={(event) => setLoanNote(event.target.value)} placeholder="Note (optional)" />
-        <button type="submit">{editingLoanId ? "Update Hand Loan" : "Add Hand Loan"}</button>
-      </form>
+      <Card variant="outlined" sx={{ borderRadius: 2 }}>
+        <CardContent>
+          <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 600 }}>
+            Hand loans
+          </Typography>
+          <Box component="form" onSubmit={(event) => void handleHandLoanSubmit(event)}>
+            <Stack spacing={2}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={2} useFlexGap sx={{ flexWrap: "wrap" }}>
+                <FormControl size="small" sx={{ minWidth: 140 }}>
+                  <InputLabel id="loan-dir-label">Direction</InputLabel>
+                  <Select
+                    labelId="loan-dir-label"
+                    label="Direction"
+                    value={loanDirection}
+                    onChange={(event) => setLoanDirection(event.target.value as "borrowed" | "lent")}
+                  >
+                    <MenuItem value="borrowed">Borrowed</MenuItem>
+                    <MenuItem value="lent">Lent</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField label="Counterparty" value={loanCounterparty} onChange={(e) => setLoanCounterparty(e.target.value)} required size="small" sx={{ flex: 1, minWidth: 160 }} />
+                <TextField label="Principal" type="number" value={loanPrincipal} onChange={(e) => setLoanPrincipal(e.target.value)} required size="small" slotProps={{ htmlInput: { min: "0.01", step: "0.01" } }} sx={{ minWidth: 120 }} />
+                <TextField label="Due date" type="date" value={loanDueDate} onChange={(e) => setLoanDueDate(e.target.value)} size="small" slotProps={{ inputLabel: { shrink: true } }} sx={{ minWidth: 160 }} />
+                <FormControl size="small" sx={{ minWidth: 120 }}>
+                  <InputLabel id="loan-status-label">Status</InputLabel>
+                  <Select
+                    labelId="loan-status-label"
+                    label="Status"
+                    value={loanStatus}
+                    onChange={(event) => setLoanStatus(event.target.value as "active" | "paid")}
+                  >
+                    <MenuItem value="active">Active</MenuItem>
+                    <MenuItem value="paid">Paid</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField label="Note (optional)" value={loanNote} onChange={(e) => setLoanNote(e.target.value)} size="small" sx={{ flex: 1, minWidth: 200 }} />
+              </Stack>
+              <Button type="submit" variant="contained" sx={{ alignSelf: "flex-start" }}>
+                {editingLoanId ? "Update hand loan" : "Add hand loan"}
+              </Button>
+            </Stack>
+          </Box>
+        </CardContent>
+      </Card>
 
       {isLoadingHandLoans ? (
-        <p>Loading hand loans...</p>
+        <Typography variant="body2">Loading hand loans…</Typography>
       ) : handLoans.length === 0 ? (
         <EmptyState message="No hand loans yet." />
       ) : (
-        <ul className="debt-list">
+        <Stack spacing={1.5}>
           {handLoans.map((loan) => (
-            <li key={loan.id} className="debt-item">
-              <div>
-                <strong>
-                  {loan.direction} - {loan.counterparty}
-                </strong>
-                <small>
+            <Paper key={loan.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+              <Stack spacing={1}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  {loan.direction} · {loan.counterparty}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
                   {loan.status}
-                  {loan.dueDate ? ` - Due ${new Date(loan.dueDate).toLocaleDateString()}` : ""}
-                  {loan.note ? ` - ${loan.note}` : ""}
-                </small>
-              </div>
-              <div className="debt-item-actions">
-                <span>{formatCurrency(loan.principal)}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingLoanId(loan.id);
-                    setLoanDirection(loan.direction);
-                    setLoanCounterparty(loan.counterparty);
-                    setLoanPrincipal(String(loan.principal));
-                    setLoanDueDate(loan.dueDate ? loan.dueDate.slice(0, 10) : "");
-                    setLoanStatus(loan.status);
-                    setLoanNote(loan.note ?? "");
-                  }}
-                >
-                  Edit
-                </button>
-                <button type="button" onClick={() => void handleDeleteHandLoan(loan.id)}>
-                  Delete
-                </button>
-              </div>
-            </li>
+                  {loan.dueDate ? ` · Due ${new Date(loan.dueDate).toLocaleDateString()}` : ""}
+                  {loan.note ? ` · ${loan.note}` : ""}
+                </Typography>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
+                  <Typography sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{formatCurrency(loan.principal)}</Typography>
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => {
+                        setEditingLoanId(loan.id);
+                        setLoanDirection(loan.direction);
+                        setLoanCounterparty(loan.counterparty);
+                        setLoanPrincipal(String(loan.principal));
+                        setLoanDueDate(loan.dueDate ? loan.dueDate.slice(0, 10) : "");
+                        setLoanStatus(loan.status);
+                        setLoanNote(loan.note ?? "");
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button size="small" color="error" variant="outlined" onClick={() => void handleDeleteHandLoan(loan.id)}>
+                      Delete
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Stack>
+            </Paper>
           ))}
-        </ul>
+        </Stack>
       )}
-    </section>
+    </Stack>
   );
 }
 

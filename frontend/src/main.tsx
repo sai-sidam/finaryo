@@ -9,7 +9,7 @@ import { theme } from "./theme";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ThemeProvider theme={theme} defaultMode="dark">
+    <ThemeProvider theme={theme} defaultMode="light">
       <CssBaseline />
       <App />
     </ThemeProvider>
