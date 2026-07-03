@@ -1,0 +1,26 @@
+export const CATEGORY_WHITELIST = [
+  "Uncategorized",
+  "Food",
+  "Transport",
+  "Groceries",
+  "Shopping",
+  "Bills",
+  "Rent",
+  "Utilities",
+  "Healthcare",
+  "Entertainment",
+  "Travel",
+  "Education",
+  "Income",
+  "Transfer",
+  "Subscriptions",
+  "Insurance",
+  "Debt Payment",
+  "Savings",
+  "Cash Withdrawal",
+  "Fees",
+  "Taxes",
+  "Other",
+];
+
+export const FILE_UPLOAD_LIMIT_BYTES = 5 * 1024 * 1024;

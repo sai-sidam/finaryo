@@ -3,5 +3,10 @@ node_modules
 .env
 
 /generated/prisma
+# DATABASE_URL is resolved relative to the schema dir, so the SQLite file can
+# land in either location depending on how Prisma is invoked. Ignore both.
+/prisma/*.db
+/prisma/*.db-*
 /prisma/prisma/*.db
 /prisma/prisma/*.db-*
+/uploads/

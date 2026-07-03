@@ -1,3 +1,29 @@
+/** Must stay in sync with CATEGORY_WHITELIST in backend/index.js. */
+export const CATEGORIES = [
+  "Uncategorized",
+  "Food",
+  "Transport",
+  "Groceries",
+  "Shopping",
+  "Bills",
+  "Rent",
+  "Utilities",
+  "Healthcare",
+  "Entertainment",
+  "Travel",
+  "Education",
+  "Income",
+  "Transfer",
+  "Subscriptions",
+  "Insurance",
+  "Debt Payment",
+  "Savings",
+  "Cash Withdrawal",
+  "Fees",
+  "Taxes",
+  "Other",
+] as const;
+
 export function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -7,6 +33,26 @@ export function formatCurrency(amount: number) {
 
 export function monthStartDate(baseDate: Date) {
   return new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+}
+
+/** YYYY-MM-DD key for a Date using its *local* calendar day (never UTC). */
+export function toLocalDateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+/**
+ * Formats a date-only value (ISO string from the API, stored at UTC midnight)
+ * as a local calendar date without shifting a day across timezones.
+ */
+export function formatDateOnly(isoDate: string) {
+  const dayPart = isoDate.slice(0, 10);
+  const [year, month, day] = dayPart.split("-").map(Number);
+  if (!year || !month || !day) {
+    return dayPart;
+  }
+  return new Date(year, month - 1, day).toLocaleDateString();
 }
 
 export function toMonthKey(date: Date) {

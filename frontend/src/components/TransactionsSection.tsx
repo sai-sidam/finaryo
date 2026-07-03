@@ -20,7 +20,8 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useSearchParams } from "react-router-dom";
 import type { Transaction } from "../types";
-import { formatCurrency } from "../utils";
+import MenuItem from "@mui/material/MenuItem";
+import { CATEGORIES, formatCurrency, formatDateOnly } from "../utils";
 
 type TransactionsSectionProps = {
   searchText: string;
@@ -32,6 +33,9 @@ type TransactionsSectionProps = {
   maxAmount: string;
   setMaxAmount: (value: string) => void;
   loadTransactions: () => Promise<void>;
+  hasMoreTransactions: boolean;
+  isLoadingMoreTransactions: boolean;
+  loadMoreTransactions: () => Promise<void>;
   editingTransaction: Transaction | null;
   setEditingTransaction: (
     value: Transaction | null | ((current: Transaction | null) => Transaction | null),
@@ -59,6 +63,9 @@ function TransactionsSection({
   maxAmount,
   setMaxAmount,
   loadTransactions,
+  hasMoreTransactions,
+  isLoadingMoreTransactions,
+  loadMoreTransactions,
   editingTransaction,
   setEditingTransaction,
   handleUpdateTransaction,
@@ -186,7 +193,7 @@ function TransactionsSection({
                 {reviewTransactions.map((transaction) => (
                   <TableRow key={`review-${transaction.id}`}>
                     <TableCell>{transaction.description}</TableCell>
-                    <TableCell>{new Date(transaction.date).toLocaleDateString()}</TableCell>
+                    <TableCell>{formatDateOnly(transaction.date)}</TableCell>
                     <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                       {formatCurrency(transaction.amount)}
                     </TableCell>
@@ -196,10 +203,11 @@ function TransactionsSection({
                         ? `(${Math.round(transaction.categorizationConfidence * 100)}%)`
                         : ""}
                     </TableCell>
-                    <TableCell sx={{ minWidth: 140 }}>
+                    <TableCell sx={{ minWidth: 160 }}>
                       <TextField
                         size="small"
-                        placeholder="Category"
+                        select
+                        fullWidth
                         value={reviewCategoryEdits[transaction.id] ?? transaction.category}
                         onChange={(event) =>
                           setReviewCategoryEdits((current) => ({
@@ -207,7 +215,13 @@ function TransactionsSection({
                             [transaction.id]: event.target.value,
                           }))
                         }
-                      />
+                      >
+                        {CATEGORIES.map((option) => (
+                          <MenuItem key={option} value={option}>
+                            {option}
+                          </MenuItem>
+                        ))}
+                      </TextField>
                     </TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
@@ -260,14 +274,16 @@ function TransactionsSection({
                       current ? { ...current, amount: Number(event.target.value) } : current,
                     )
                   }
-                  slotProps={{ htmlInput: { min: "0.01", step: "0.01" } }}
+                  helperText="Negative for spending, positive for income"
+                  slotProps={{ htmlInput: { step: "0.01" } }}
                   required
                   size="small"
                   fullWidth
                 />
                 <TextField
                   label="Category"
-                  value={editingTransaction.category}
+                  select
+                  value={CATEGORIES.includes(editingTransaction.category as (typeof CATEGORIES)[number]) ? editingTransaction.category : "Uncategorized"}
                   onChange={(event) =>
                     setEditingTransaction((current) =>
                       current ? { ...current, category: event.target.value } : current,
@@ -276,16 +292,26 @@ function TransactionsSection({
                   required
                   size="small"
                   fullWidth
-                />
+                >
+                  {CATEGORIES.map((option) => (
+                    <MenuItem key={option} value={option}>
+                      {option}
+                    </MenuItem>
+                  ))}
+                </TextField>
                 <TextField
                   label="Date"
                   type="date"
                   value={editingTransaction.date.slice(0, 10)}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (!value) return;
+                    // Store as UTC midnight to match how the backend keeps
+                    // day-granular dates; avoids off-by-one-day shifts.
                     setEditingTransaction((current) =>
-                      current ? { ...current, date: new Date(event.target.value).toISOString() } : current,
-                    )
-                  }
+                      current ? { ...current, date: `${value}T00:00:00.000Z` } : current,
+                    );
+                  }}
                   slotProps={{ inputLabel: { shrink: true } }}
                   required
                   size="small"
@@ -343,7 +369,7 @@ function TransactionsSection({
               {transactions.map((transaction) => (
                 <TableRow key={`${transaction.sourceType}-${transaction.id}`}>
                   <TableCell>{transaction.description}</TableCell>
-                  <TableCell>{new Date(transaction.date).toLocaleDateString()}</TableCell>
+                  <TableCell>{formatDateOnly(transaction.date)}</TableCell>
                   <TableCell>{transaction.category}</TableCell>
                   <TableCell>
                     {transaction.sourceType}
@@ -366,6 +392,13 @@ function TransactionsSection({
               ))}
             </TableBody>
           </Table>
+          {hasMoreTransactions ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 1.5 }}>
+              <Button size="small" onClick={() => void loadMoreTransactions()} disabled={isLoadingMoreTransactions}>
+                {isLoadingMoreTransactions ? "Loading…" : "Load more"}
+              </Button>
+            </Box>
+          ) : null}
         </TableContainer>
       )}
       </CardContent>

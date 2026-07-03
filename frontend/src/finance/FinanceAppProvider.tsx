@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { FormEvent } from "react";
-import { usePlaidLink } from "react-plaid-link";
-import { FinanceAppContext } from "../context/FinanceAppContext";
+import { FinanceAppContext, type FinanceAppContextValue } from "../context/FinanceAppContext";
 import type {
   CategorizationRule,
   DebtAccount,
@@ -12,15 +11,21 @@ import type {
   MonthlyInsights,
   PaydayEvent,
   PayslipDocument,
-  PlaidSyncSummary,
   RecurringCandidate,
   SavingsGoal,
   Transaction,
   UploadResult,
 } from "../types";
-import { buildCalendarDays, monthStartDate, toMonthKey } from "../utils";
+import { buildCalendarDays, monthStartDate, toLocalDateKey, toMonthKey } from "../utils";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+const TRANSACTIONS_PAGE_SIZE = 100;
+
+/** Parses a money text input; returns null when it isn't a usable number. */
+function parseMoneyInput(raw: string): number | null {
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
 
 export function FinanceAppProvider({ children }: { children: ReactNode }) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -30,15 +35,12 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isCreatingLinkToken, setIsCreatingLinkToken] = useState(false);
-  const [isSyncingPlaid, setIsSyncingPlaid] = useState(false);
-  const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
-  const [isPlaidConnected, setIsPlaidConnected] = useState(false);
-  const [plaidSummary, setPlaidSummary] = useState<PlaidSyncSummary | null>(null);
   const [statementFile, setStatementFile] = useState<File | null>(null);
   const [isUploadingStatement, setIsUploadingStatement] = useState(false);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [hasMoreTransactions, setHasMoreTransactions] = useState(false);
+  const [isLoadingMoreTransactions, setIsLoadingMoreTransactions] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [filterCategory, setFilterCategory] = useState("");
   const [minAmount, setMinAmount] = useState("");
@@ -48,7 +50,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
   const [isLoadingReviewTransactions, setIsLoadingReviewTransactions] = useState(false);
   const [reviewCategoryEdits, setReviewCategoryEdits] = useState<Record<string, string>>({});
   const [activeMonth, setActiveMonth] = useState(() => monthStartDate(new Date()));
-  const [selectedPaydayDate, setSelectedPaydayDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [selectedPaydayDate, setSelectedPaydayDate] = useState(() => toLocalDateKey(new Date()));
   const [paydayAmount, setPaydayAmount] = useState("");
   const [paydayNote, setPaydayNote] = useState("");
   const [paydayRecurrence, setPaydayRecurrence] = useState<"none" | "biweekly" | "monthly">("none");
@@ -105,7 +107,6 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
-  const [pendingPlaidOpen, setPendingPlaidOpen] = useState(false);
 
   const showSnackbar = useCallback((message: string) => {
     setSnackbarMessage(message);
@@ -133,29 +134,38 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function buildTransactionQuery(offset: number) {
+    const query = new URLSearchParams();
+    if (searchText.trim()) {
+      query.set("q", searchText.trim());
+    }
+    if (filterCategory.trim()) {
+      query.set("category", filterCategory.trim());
+    }
+    if (minAmount.trim()) {
+      query.set("minAmount", minAmount.trim());
+    }
+    if (maxAmount.trim()) {
+      query.set("maxAmount", maxAmount.trim());
+    }
+    query.set("limit", String(TRANSACTIONS_PAGE_SIZE));
+    query.set("offset", String(offset));
+    return query;
+  }
+
   async function loadTransactions() {
     setIsLoadingTransactions(true);
+    setError(null);
     try {
-      const query = new URLSearchParams();
-      if (searchText.trim()) {
-        query.set("q", searchText.trim());
-      }
-      if (filterCategory.trim()) {
-        query.set("category", filterCategory.trim());
-      }
-      if (minAmount.trim()) {
-        query.set("minAmount", minAmount.trim());
-      }
-      if (maxAmount.trim()) {
-        query.set("maxAmount", maxAmount.trim());
-      }
-      const querySuffix = query.toString() ? `?${query.toString()}` : "";
-      const response = await fetch(`${API_BASE_URL}/api/transactions${querySuffix}`);
+      const query = buildTransactionQuery(0);
+      const response = await fetch(`${API_BASE_URL}/api/transactions?${query.toString()}`);
       const payload = (await response.json()) as { error?: string; data?: Transaction[] };
       if (!response.ok) {
         throw new Error(payload.error ?? "Unable to load transactions.");
       }
-      setTransactions(Array.isArray(payload.data) ? payload.data : []);
+      const rows = Array.isArray(payload.data) ? payload.data : [];
+      setTransactions(rows);
+      setHasMoreTransactions(rows.length === TRANSACTIONS_PAGE_SIZE);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unexpected error while loading transactions.");
     } finally {
@@ -163,8 +173,29 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function loadMoreTransactions() {
+    setIsLoadingMoreTransactions(true);
+    setError(null);
+    try {
+      const query = buildTransactionQuery(transactions.length);
+      const response = await fetch(`${API_BASE_URL}/api/transactions?${query.toString()}`);
+      const payload = (await response.json()) as { error?: string; data?: Transaction[] };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to load more transactions.");
+      }
+      const rows = Array.isArray(payload.data) ? payload.data : [];
+      setTransactions((current) => [...current, ...rows]);
+      setHasMoreTransactions(rows.length === TRANSACTIONS_PAGE_SIZE);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unexpected error while loading more transactions.");
+    } finally {
+      setIsLoadingMoreTransactions(false);
+    }
+  }
+
   async function loadReviewTransactions() {
     setIsLoadingReviewTransactions(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/transactions/review`);
       const payload = (await response.json()) as { error?: string; data?: Transaction[] };
@@ -174,11 +205,10 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
       const data = Array.isArray(payload.data) ? payload.data : [];
       setReviewTransactions(data);
       setReviewCategoryEdits((current) => {
-        const next = { ...current };
+        // Rebuild from the fresh queue so edits for resolved rows don't linger.
+        const next: Record<string, string> = {};
         for (const row of data) {
-          if (!next[row.id]) {
-            next[row.id] = row.category;
-          }
+          next[row.id] = current[row.id] ?? row.category;
         }
         return next;
       });
@@ -191,6 +221,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadPaydays(targetMonth: Date = activeMonth) {
     setIsLoadingPaydays(true);
+    setError(null);
     try {
       const month = toMonthKey(targetMonth);
       const response = await fetch(`${API_BASE_URL}/api/paydays?month=${month}`);
@@ -208,6 +239,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadDebts() {
     setIsLoadingDebts(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/debts`);
       const payload = (await response.json()) as { error?: string; data?: DebtAccount[] };
@@ -224,6 +256,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadHandLoans() {
     setIsLoadingHandLoans(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/hand-loans`);
       const payload = (await response.json()) as { error?: string; data?: HandLoan[] };
@@ -240,6 +273,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadDebtProjection() {
     setIsLoadingProjection(true);
+    setError(null);
     try {
       const params = new URLSearchParams({ strategy: projectionStrategy });
       if (projectionBudget.trim()) {
@@ -260,6 +294,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadCategorizationRules() {
     setIsLoadingRules(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/categorization-rules`);
       const payload = (await response.json()) as { error?: string; data?: CategorizationRule[] };
@@ -274,6 +309,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadSavingsGoals() {
     setIsLoadingSavingsGoals(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/savings-goals`);
       const payload = (await response.json()) as { error?: string; data?: SavingsGoal[] };
@@ -288,6 +324,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadMonthlyInsights() {
     setIsLoadingInsights(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/insights/monthly?month=${insightsMonth}`);
       const payload = (await response.json()) as { error?: string; data?: MonthlyInsights };
@@ -302,6 +339,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadBalanceSheet() {
     setIsLoadingBalanceSheet(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/insights/balance-sheet?month=${insightsMonth}`);
       const payload = (await response.json()) as { error?: string; data?: BalanceSheetInsights };
@@ -318,6 +356,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadRecurringCandidates() {
     setIsLoadingRecurring(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/transactions/recurring`);
       const payload = (await response.json()) as { error?: string; data?: RecurringCandidate[] };
@@ -332,6 +371,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function loadPayslips() {
     setIsLoadingPayslips(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/payslips`);
       const payload = (await response.json()) as { error?: string; data?: PayslipDocument[] };
@@ -358,127 +398,37 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
     void loadRecurringCandidates();
     void loadPayslips();
     void loadReviewTransactions();
+    // Initial data load only — loaders are stable for the app's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     void loadMonthlyInsights();
     void loadBalanceSheet();
+    // Refetch when the selected month changes; loaders read latest state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [insightsMonth]);
 
-  const { open: openPlaid, ready: isPlaidReady } = usePlaidLink({
-    token: plaidLinkToken,
-    onSuccess: async (publicToken) => {
-      setError(null);
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/plaid/public-token/exchange`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ publicToken }),
-        });
-        const payload = (await response.json()) as { error?: string; data?: { itemId?: string } };
-        if (!response.ok) {
-          throw new Error(payload.error ?? "Plaid token exchange failed.");
-        }
-        setIsPlaidConnected(Boolean(payload.data?.itemId));
-        showSnackbar("Bank connected.");
-      } catch (exchangeError) {
-        setError(exchangeError instanceof Error ? exchangeError.message : "Plaid token exchange failed.");
-      }
-    },
-    onExit: (plaidError) => {
-      if (plaidError?.error_message) {
-        setError(plaidError.error_message);
-      }
-    },
-  });
-
-  useEffect(() => {
-    if (pendingPlaidOpen && plaidLinkToken && isPlaidReady) {
-      setPendingPlaidOpen(false);
-      openPlaid();
-    }
-  }, [pendingPlaidOpen, plaidLinkToken, isPlaidReady, openPlaid]);
-
-  async function createPlaidLinkToken() {
-    setError(null);
-    setIsCreatingLinkToken(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/plaid/link-token/create`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ clientName: "Finaryo MVP" }),
-      });
-      const payload = (await response.json()) as {
-        error?: string;
-        data?: { linkToken?: string };
-      };
-
-      if (!response.ok || !payload.data?.linkToken) {
-        throw new Error(payload.error ?? "Failed to create Plaid link token.");
-      }
-
-      setPlaidLinkToken(payload.data.linkToken);
-    } catch (linkTokenError) {
-      setError(linkTokenError instanceof Error ? linkTokenError.message : "Failed to create Plaid link token.");
-    } finally {
-      setIsCreatingLinkToken(false);
-    }
-  }
-
-  async function requestConnectBank() {
-    setError(null);
-    try {
-      if (!plaidLinkToken) {
-        await createPlaidLinkToken();
-      }
-      setPendingPlaidOpen(true);
-    } catch {
-      /* errors surfaced via setError in createPlaidLinkToken */
-    }
-  }
-
-  async function syncPlaidTransactions() {
-    setError(null);
-    setIsSyncingPlaid(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/plaid/transactions/sync`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-      const payload = (await response.json()) as {
-        error?: string;
-        data?: PlaidSyncSummary;
-      };
-
-      if (!response.ok || !payload.data) {
-        throw new Error(payload.error ?? "Plaid transaction sync failed.");
-      }
-      setPlaidSummary(payload.data);
-      setIsPlaidConnected(true);
-      await Promise.all([
-        loadTransactions(),
-        loadReviewTransactions(),
-        loadMonthlyInsights(),
-        loadBalanceSheet(),
-        loadDebts(),
-        loadDebtProjection(),
-      ]);
-      showSnackbar("Transactions synced.");
-    } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : "Plaid transaction sync failed.");
-    } finally {
-      setIsSyncingPlaid(false);
-    }
+  /** Reloads everything an import (statement or Plaid sync) can affect. */
+  async function refreshAfterImport() {
+    await Promise.all([
+      loadTransactions(),
+      loadReviewTransactions(),
+      loadMonthlyInsights(),
+      loadBalanceSheet(),
+      loadDebts(),
+      loadDebtProjection(),
+    ]);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    const amountValue = parseMoneyInput(amount);
+    if (amountValue == null || amountValue <= 0) {
+      setError("Amount must be a number greater than 0.");
+      return;
+    }
 
     setError(null);
     setIsSubmitting(true);
@@ -488,7 +438,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ name, amount: Number(amount), category }),
+        body: JSON.stringify({ name, amount: amountValue, category }),
       });
 
       const payload = (await response.json()) as { error?: string; data?: Expense };
@@ -535,6 +485,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
       }
 
       setUploadResult(payload.data);
+      setStatementFile(null);
       await Promise.all([loadTransactions(), loadReviewTransactions(), loadMonthlyInsights(), loadBalanceSheet()]);
       showSnackbar("Statement imported.");
     } catch (uploadError) {
@@ -564,6 +515,10 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
   async function handleUpdateTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editingTransaction) {
+      return;
+    }
+    if (!Number.isFinite(editingTransaction.amount) || editingTransaction.amount === 0) {
+      setError("Amount must be a non-zero number (negative for spending).");
       return;
     }
 
@@ -603,11 +558,16 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function handlePaydaySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const expectedAmount = parseMoneyInput(paydayAmount);
+    if (expectedAmount == null || expectedAmount <= 0) {
+      setError("Expected amount must be a number greater than 0.");
+      return;
+    }
     setError(null);
     try {
       const payload = {
         date: new Date(`${selectedPaydayDate}T00:00:00.000Z`).toISOString(),
-        expectedAmount: Number(paydayAmount),
+        expectedAmount,
         note: paydayNote.trim(),
         recurrence: paydayRecurrence,
       };
@@ -652,15 +612,27 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function handleDebtSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const balance = parseMoneyInput(debtBalance);
+    const apr = parseMoneyInput(debtApr);
+    const minimumPayment = parseMoneyInput(debtMinimumPayment);
+    const dueDay = Number(debtDueDay);
+    if (balance == null || balance <= 0 || apr == null || minimumPayment == null || minimumPayment <= 0) {
+      setError("Balance, APR, and minimum payment must be valid numbers.");
+      return;
+    }
+    if (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) {
+      setError("Due day must be a whole number between 1 and 31.");
+      return;
+    }
     setError(null);
     try {
       const payload = {
         name: debtName,
         lender: debtLender,
-        balance: Number(debtBalance),
-        apr: Number(debtApr),
-        minimumPayment: Number(debtMinimumPayment),
-        dueDay: Number(debtDueDay),
+        balance,
+        apr,
+        minimumPayment,
+        dueDay,
       };
       const isEditing = Boolean(editingDebtId);
       const response = await fetch(
@@ -704,12 +676,17 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function handleHandLoanSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const principal = parseMoneyInput(loanPrincipal);
+    if (principal == null || principal <= 0) {
+      setError("Principal must be a number greater than 0.");
+      return;
+    }
     setError(null);
     try {
       const payload = {
         direction: loanDirection,
         counterparty: loanCounterparty,
-        principal: Number(loanPrincipal),
+        principal,
         dueDate: loanDueDate ? new Date(`${loanDueDate}T00:00:00.000Z`).toISOString() : undefined,
         status: loanStatus,
         note: loanNote,
@@ -774,6 +751,7 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
   }
 
   async function handleDeleteRule(id: string) {
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/categorization-rules/${id}`, { method: "DELETE" });
       if (!response.ok) {
@@ -788,6 +766,16 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
 
   async function handleCreateSavingsGoal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const targetAmount = parseMoneyInput(goalTargetAmount);
+    if (targetAmount == null || targetAmount <= 0) {
+      setError("Target amount must be a number greater than 0.");
+      return;
+    }
+    const autoContributePercent = parseMoneyInput(goalAutoContributePercent || "0");
+    if (autoContributePercent == null || autoContributePercent < 0 || autoContributePercent > 100) {
+      setError("Auto-contribute percent must be between 0 and 100.");
+      return;
+    }
     setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/savings-goals`, {
@@ -795,10 +783,10 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: goalName,
-          targetAmount: Number(goalTargetAmount),
+          targetAmount,
           targetDate: goalTargetDate ? new Date(`${goalTargetDate}T00:00:00.000Z`).toISOString() : undefined,
           autoContributePayday: goalAutoContributePayday,
-          autoContributePercent: Number(goalAutoContributePercent || "0"),
+          autoContributePercent,
         }),
       });
       const payload = (await response.json()) as { error?: string };
@@ -817,11 +805,17 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
   async function handleAddSavingsContribution(goalId: string) {
     const rawAmount = goalContributionAmount[goalId] ?? "";
     if (!rawAmount.trim()) return;
+    const contributionAmount = parseMoneyInput(rawAmount);
+    if (contributionAmount == null || contributionAmount <= 0) {
+      setError("Contribution amount must be a number greater than 0.");
+      return;
+    }
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/savings-goals/${goalId}/contributions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount: Number(rawAmount), sourceType: "manual" }),
+        body: JSON.stringify({ amount: contributionAmount, sourceType: "manual" }),
       });
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Unable to add savings contribution.");
@@ -919,212 +913,253 @@ export function FinanceAppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const finance = {
-    API_BASE_URL,
-    expenses,
-    setExpenses,
-    name,
-    setName,
-    amount,
-    setAmount,
-    category,
-    setCategory,
-    isLoading,
-    setIsLoading,
-    isLoadingTransactions,
-    setIsLoadingTransactions,
-    isSubmitting,
-    setIsSubmitting,
-    isCreatingLinkToken,
-    setIsCreatingLinkToken,
-    isSyncingPlaid,
-    setIsSyncingPlaid,
-    plaidLinkToken,
-    setPlaidLinkToken,
-    isPlaidConnected,
-    setIsPlaidConnected,
-    plaidSummary,
-    setPlaidSummary,
-    statementFile,
-    setStatementFile,
-    isUploadingStatement,
-    setIsUploadingStatement,
-    uploadResult,
-    setUploadResult,
-    transactions,
-    setTransactions,
-    searchText,
-    setSearchText,
-    filterCategory,
-    setFilterCategory,
-    minAmount,
-    setMinAmount,
-    maxAmount,
-    setMaxAmount,
-    editingTransaction,
-    setEditingTransaction,
-    reviewTransactions,
-    setReviewTransactions,
-    isLoadingReviewTransactions,
-    setIsLoadingReviewTransactions,
-    reviewCategoryEdits,
-    setReviewCategoryEdits,
-    activeMonth,
-    setActiveMonth,
-    selectedPaydayDate,
-    setSelectedPaydayDate,
-    paydayAmount,
-    setPaydayAmount,
-    paydayNote,
-    setPaydayNote,
-    paydayRecurrence,
-    setPaydayRecurrence,
-    paydays,
-    setPaydays,
-    isLoadingPaydays,
-    setIsLoadingPaydays,
-    editingPaydayId,
-    setEditingPaydayId,
-    debts,
-    setDebts,
-    isLoadingDebts,
-    setIsLoadingDebts,
-    debtName,
-    setDebtName,
-    debtLender,
-    setDebtLender,
-    debtBalance,
-    setDebtBalance,
-    debtApr,
-    setDebtApr,
-    debtMinimumPayment,
-    setDebtMinimumPayment,
-    debtDueDay,
-    setDebtDueDay,
-    editingDebtId,
-    setEditingDebtId,
-    handLoans,
-    setHandLoans,
-    isLoadingHandLoans,
-    setIsLoadingHandLoans,
-    loanDirection,
-    setLoanDirection,
-    loanCounterparty,
-    setLoanCounterparty,
-    loanPrincipal,
-    setLoanPrincipal,
-    loanDueDate,
-    setLoanDueDate,
-    loanStatus,
-    setLoanStatus,
-    loanNote,
-    setLoanNote,
-    editingLoanId,
-    setEditingLoanId,
-    projectionStrategy,
-    setProjectionStrategy,
-    projectionBudget,
-    setProjectionBudget,
-    projection,
-    setProjection,
-    isLoadingProjection,
-    setIsLoadingProjection,
-    rules,
-    setRules,
-    ruleKeyword,
-    setRuleKeyword,
-    ruleCategory,
-    setRuleCategory,
-    isLoadingRules,
-    setIsLoadingRules,
-    savingsGoals,
-    setSavingsGoals,
-    isLoadingSavingsGoals,
-    setIsLoadingSavingsGoals,
-    goalName,
-    setGoalName,
-    goalTargetAmount,
-    setGoalTargetAmount,
-    goalTargetDate,
-    setGoalTargetDate,
-    goalAutoContributePayday,
-    setGoalAutoContributePayday,
-    goalAutoContributePercent,
-    setGoalAutoContributePercent,
-    goalContributionAmount,
-    setGoalContributionAmount,
-    insightsMonth,
-    setInsightsMonth,
-    insights,
-    setInsights,
-    isLoadingInsights,
-    setIsLoadingInsights,
-    isLoadingBalanceSheet,
-    setIsLoadingBalanceSheet,
-    balanceSheet,
-    setBalanceSheet,
-    isCleaningDuplicates,
-    setIsCleaningDuplicates,
-    duplicateCleanupSummary,
-    setDuplicateCleanupSummary,
-    recurringCandidates,
-    setRecurringCandidates,
-    isLoadingRecurring,
-    setIsLoadingRecurring,
-    payslipFile,
-    setPayslipFile,
-    isUploadingPayslip,
-    setIsUploadingPayslip,
-    payslips,
-    setPayslips,
-    isLoadingPayslips,
-    setIsLoadingPayslips,
-    error,
-    setError,
-    snackbarOpen,
-    setSnackbarOpen,
-    snackbarMessage,
-    setSnackbarMessage,
-    showSnackbar,
-    total,
-    calendarCells,
-    paydaySet,
-    loadExpenses,
-    loadTransactions,
-    loadReviewTransactions,
-    loadPaydays,
-    loadDebts,
-    loadHandLoans,
-    loadDebtProjection,
-    loadCategorizationRules,
-    loadSavingsGoals,
-    loadMonthlyInsights,
-    loadBalanceSheet,
-    loadRecurringCandidates,
-    loadPayslips,
-    createPlaidLinkToken,
-    requestConnectBank,
-    syncPlaidTransactions,
-    openPlaid,
-    isPlaidReady,
-    handleSubmit,
-    handleStatementUpload,
-    handleDeleteTransaction,
-    handleUpdateTransaction,
-    handlePaydaySubmit,
-    handleDeletePayday,
-    handleDebtSubmit,
-    handleDeleteDebt,
-    handleHandLoanSubmit,
-    handleDeleteHandLoan,
-    handleCreateRule,
-    handleDeleteRule,
-    handleCreateSavingsGoal,
-    handleAddSavingsContribution,
-    handleUploadPayslip,
-    handleResolveReviewTransaction,
-    performDuplicateCleanup,
-  };
+  // The handlers close over the state above and are recreated every render.
+  // Every piece of state they read is also a dependency here, so memoized
+  // closures can never observe stale values.
+  const finance = useMemo<FinanceAppContextValue>(
+    () => ({
+      API_BASE_URL,
+      expenses,
+      name,
+      setName,
+      amount,
+      setAmount,
+      category,
+      setCategory,
+      total,
+      isLoading,
+      isSubmitting,
+      handleSubmit,
+      transactions,
+      isLoadingTransactions,
+      loadTransactions,
+      hasMoreTransactions,
+      isLoadingMoreTransactions,
+      loadMoreTransactions,
+      searchText,
+      setSearchText,
+      filterCategory,
+      setFilterCategory,
+      minAmount,
+      setMinAmount,
+      maxAmount,
+      setMaxAmount,
+      editingTransaction,
+      setEditingTransaction,
+      handleUpdateTransaction,
+      handleDeleteTransaction,
+      reviewTransactions,
+      isLoadingReviewTransactions,
+      reviewCategoryEdits,
+      setReviewCategoryEdits,
+      handleResolveReviewTransaction,
+      statementFile,
+      setStatementFile,
+      isUploadingStatement,
+      uploadResult,
+      setUploadResult,
+      handleStatementUpload,
+      isCleaningDuplicates,
+      duplicateCleanupSummary,
+      performDuplicateCleanup,
+      activeMonth,
+      setActiveMonth,
+      calendarCells,
+      paydaySet,
+      paydays,
+      isLoadingPaydays,
+      loadPaydays,
+      selectedPaydayDate,
+      setSelectedPaydayDate,
+      paydayAmount,
+      setPaydayAmount,
+      paydayNote,
+      setPaydayNote,
+      paydayRecurrence,
+      setPaydayRecurrence,
+      editingPaydayId,
+      setEditingPaydayId,
+      handlePaydaySubmit,
+      handleDeletePayday,
+      debts,
+      isLoadingDebts,
+      debtName,
+      setDebtName,
+      debtLender,
+      setDebtLender,
+      debtBalance,
+      setDebtBalance,
+      debtApr,
+      setDebtApr,
+      debtMinimumPayment,
+      setDebtMinimumPayment,
+      debtDueDay,
+      setDebtDueDay,
+      editingDebtId,
+      setEditingDebtId,
+      handleDebtSubmit,
+      handleDeleteDebt,
+      handLoans,
+      isLoadingHandLoans,
+      loanDirection,
+      setLoanDirection,
+      loanCounterparty,
+      setLoanCounterparty,
+      loanPrincipal,
+      setLoanPrincipal,
+      loanDueDate,
+      setLoanDueDate,
+      loanStatus,
+      setLoanStatus,
+      loanNote,
+      setLoanNote,
+      editingLoanId,
+      setEditingLoanId,
+      handleHandLoanSubmit,
+      handleDeleteHandLoan,
+      projectionStrategy,
+      setProjectionStrategy,
+      projectionBudget,
+      setProjectionBudget,
+      projection,
+      isLoadingProjection,
+      loadDebtProjection,
+      rules,
+      isLoadingRules,
+      ruleKeyword,
+      setRuleKeyword,
+      ruleCategory,
+      setRuleCategory,
+      handleCreateRule,
+      handleDeleteRule,
+      savingsGoals,
+      isLoadingSavingsGoals,
+      goalName,
+      setGoalName,
+      goalTargetAmount,
+      setGoalTargetAmount,
+      goalTargetDate,
+      setGoalTargetDate,
+      goalAutoContributePayday,
+      setGoalAutoContributePayday,
+      goalAutoContributePercent,
+      setGoalAutoContributePercent,
+      goalContributionAmount,
+      setGoalContributionAmount,
+      handleCreateSavingsGoal,
+      handleAddSavingsContribution,
+      insightsMonth,
+      setInsightsMonth,
+      insights,
+      isLoadingInsights,
+      loadMonthlyInsights,
+      balanceSheet,
+      isLoadingBalanceSheet,
+      loadBalanceSheet,
+      recurringCandidates,
+      isLoadingRecurring,
+      loadRecurringCandidates,
+      payslips,
+      isLoadingPayslips,
+      payslipFile,
+      setPayslipFile,
+      isUploadingPayslip,
+      handleUploadPayslip,
+      refreshAfterImport,
+      error,
+      setError,
+      snackbarOpen,
+      setSnackbarOpen,
+      snackbarMessage,
+      showSnackbar,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      expenses,
+      name,
+      amount,
+      category,
+      total,
+      isLoading,
+      isSubmitting,
+      transactions,
+      isLoadingTransactions,
+      hasMoreTransactions,
+      isLoadingMoreTransactions,
+      searchText,
+      filterCategory,
+      minAmount,
+      maxAmount,
+      editingTransaction,
+      reviewTransactions,
+      isLoadingReviewTransactions,
+      reviewCategoryEdits,
+      statementFile,
+      isUploadingStatement,
+      uploadResult,
+      isCleaningDuplicates,
+      duplicateCleanupSummary,
+      activeMonth,
+      calendarCells,
+      paydaySet,
+      paydays,
+      isLoadingPaydays,
+      selectedPaydayDate,
+      paydayAmount,
+      paydayNote,
+      paydayRecurrence,
+      editingPaydayId,
+      debts,
+      isLoadingDebts,
+      debtName,
+      debtLender,
+      debtBalance,
+      debtApr,
+      debtMinimumPayment,
+      debtDueDay,
+      editingDebtId,
+      handLoans,
+      isLoadingHandLoans,
+      loanDirection,
+      loanCounterparty,
+      loanPrincipal,
+      loanDueDate,
+      loanStatus,
+      loanNote,
+      editingLoanId,
+      projectionStrategy,
+      projectionBudget,
+      projection,
+      isLoadingProjection,
+      rules,
+      isLoadingRules,
+      ruleKeyword,
+      ruleCategory,
+      savingsGoals,
+      isLoadingSavingsGoals,
+      goalName,
+      goalTargetAmount,
+      goalTargetDate,
+      goalAutoContributePayday,
+      goalAutoContributePercent,
+      goalContributionAmount,
+      insightsMonth,
+      insights,
+      isLoadingInsights,
+      balanceSheet,
+      isLoadingBalanceSheet,
+      recurringCandidates,
+      isLoadingRecurring,
+      payslips,
+      isLoadingPayslips,
+      payslipFile,
+      isUploadingPayslip,
+      error,
+      snackbarOpen,
+      snackbarMessage,
+      showSnackbar,
+    ],
+  );
 
   return <FinanceAppContext.Provider value={finance}>{children}</FinanceAppContext.Provider>;
 }

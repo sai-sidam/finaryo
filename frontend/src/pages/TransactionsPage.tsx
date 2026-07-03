@@ -53,6 +53,9 @@ export default function TransactionsPage() {
         maxAmount={fin.maxAmount}
         setMaxAmount={fin.setMaxAmount}
         loadTransactions={fin.loadTransactions}
+        hasMoreTransactions={fin.hasMoreTransactions}
+        isLoadingMoreTransactions={fin.isLoadingMoreTransactions}
+        loadMoreTransactions={fin.loadMoreTransactions}
         editingTransaction={fin.editingTransaction}
         setEditingTransaction={fin.setEditingTransaction}
         handleUpdateTransaction={fin.handleUpdateTransaction}

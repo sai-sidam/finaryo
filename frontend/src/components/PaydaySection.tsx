@@ -13,7 +13,7 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { PaydayEvent } from "../types";
-import { formatCurrency } from "../utils";
+import { formatCurrency, formatDateOnly, toLocalDateKey } from "../utils";
 
 type PaydaySectionProps = {
   activeMonth: Date;
@@ -112,7 +112,7 @@ function PaydaySection({
             </Typography>
           ))}
           {calendarCells.map((cell) => {
-            const isoDate = cell.date.toISOString().slice(0, 10);
+            const isoDate = toLocalDateKey(cell.date);
             const isSelected = selectedPaydayDate === isoDate;
             const hasPayday = paydaySet.has(isoDate);
             return (
@@ -229,7 +229,7 @@ function PaydaySection({
               <Paper key={payday.id} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
                   <Box>
-                    <Typography variant="subtitle2">{new Date(payday.date).toLocaleDateString()}</Typography>
+                    <Typography variant="subtitle2">{formatDateOnly(payday.date)}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       {payday.recurrence}
                       {payday.note ? ` · ${payday.note}` : ""}

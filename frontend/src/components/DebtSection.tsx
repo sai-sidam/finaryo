@@ -16,7 +16,7 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { DebtAccount, DebtProjection, HandLoan } from "../types";
-import { formatCurrency } from "../utils";
+import { formatCurrency, formatDateOnly } from "../utils";
 import EmptyState from "./ui/EmptyState";
 import SectionHeader from "./ui/SectionHeader";
 import StatPill from "./ui/StatPill";
@@ -132,9 +132,28 @@ function DebtSection(props: DebtSectionProps) {
                 <TextField label="Minimum payment" type="number" value={debtMinimumPayment} onChange={(e) => setDebtMinimumPayment(e.target.value)} required size="small" slotProps={{ htmlInput: { min: "0.01", step: "0.01" } }} sx={{ minWidth: 140 }} />
                 <TextField label="Due day (1–31)" type="number" value={debtDueDay} onChange={(e) => setDebtDueDay(e.target.value)} required size="small" slotProps={{ htmlInput: { min: 1, max: 31 } }} sx={{ minWidth: 120 }} />
               </Stack>
-              <Button type="submit" variant="contained" sx={{ alignSelf: "flex-start" }}>
-                {editingDebtId ? "Update debt" : "Add debt"}
-              </Button>
+              <Stack direction="row" spacing={1}>
+                <Button type="submit" variant="contained">
+                  {editingDebtId ? "Update debt" : "Add debt"}
+                </Button>
+                {editingDebtId ? (
+                  <Button
+                    type="button"
+                    variant="outlined"
+                    onClick={() => {
+                      setEditingDebtId(null);
+                      setDebtName("");
+                      setDebtLender("");
+                      setDebtBalance("");
+                      setDebtApr("");
+                      setDebtMinimumPayment("");
+                      setDebtDueDay("");
+                    }}
+                  >
+                    Cancel edit
+                  </Button>
+                ) : null}
+              </Stack>
             </Stack>
           </Box>
         </CardContent>
@@ -279,9 +298,28 @@ function DebtSection(props: DebtSectionProps) {
                 </FormControl>
                 <TextField label="Note (optional)" value={loanNote} onChange={(e) => setLoanNote(e.target.value)} size="small" sx={{ flex: 1, minWidth: 200 }} />
               </Stack>
-              <Button type="submit" variant="contained" sx={{ alignSelf: "flex-start" }}>
-                {editingLoanId ? "Update hand loan" : "Add hand loan"}
-              </Button>
+              <Stack direction="row" spacing={1}>
+                <Button type="submit" variant="contained">
+                  {editingLoanId ? "Update hand loan" : "Add hand loan"}
+                </Button>
+                {editingLoanId ? (
+                  <Button
+                    type="button"
+                    variant="outlined"
+                    onClick={() => {
+                      setEditingLoanId(null);
+                      setLoanDirection("borrowed");
+                      setLoanCounterparty("");
+                      setLoanPrincipal("");
+                      setLoanDueDate("");
+                      setLoanStatus("active");
+                      setLoanNote("");
+                    }}
+                  >
+                    Cancel edit
+                  </Button>
+                ) : null}
+              </Stack>
             </Stack>
           </Box>
         </CardContent>
@@ -301,7 +339,7 @@ function DebtSection(props: DebtSectionProps) {
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {loan.status}
-                  {loan.dueDate ? ` · Due ${new Date(loan.dueDate).toLocaleDateString()}` : ""}
+                  {loan.dueDate ? ` · Due ${formatDateOnly(loan.dueDate)}` : ""}
                   {loan.note ? ` · ${loan.note}` : ""}
                 </Typography>
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>

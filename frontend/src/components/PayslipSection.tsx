@@ -8,7 +8,7 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import type { PayslipDocument } from "../types";
-import { formatCurrency } from "../utils";
+import { formatCurrency, formatDateOnly } from "../utils";
 
 type PayslipSectionProps = {
   API_BASE_URL: string;
@@ -70,7 +70,7 @@ function PayslipSection({
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ justifyContent: "space-between", alignItems: { sm: "center" } }}>
                   <Typography variant="body2">
                     {item.fileName} · {item.parseStatus} · Pay date:{" "}
-                    {item.extractedPayDate ? new Date(item.extractedPayDate).toLocaleDateString() : "N/A"} · Net:{" "}
+                    {item.extractedPayDate ? formatDateOnly(item.extractedPayDate) : "N/A"} · Net:{" "}
                     {item.extractedNetPay ? formatCurrency(item.extractedNetPay) : "N/A"}
                   </Typography>
                   <Link href={`${API_BASE_URL}/api/payslips/${item.id}/download`} target="_blank" rel="noreferrer">

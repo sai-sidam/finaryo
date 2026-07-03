@@ -2,13 +2,14 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
+import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { FormEvent } from "react";
 import type { CategorizationRule, RecurringCandidate } from "../types";
-import { formatCurrency } from "../utils";
+import { CATEGORIES, formatCurrency } from "../utils";
 import EmptyState from "./ui/EmptyState";
 import SectionHeader from "./ui/SectionHeader";
 
@@ -58,9 +59,16 @@ function RulesSection({
               value={ruleCategory}
               onChange={(event) => setRuleCategory(event.target.value)}
               required
+              select
               size="small"
               sx={{ minWidth: { sm: 200 } }}
-            />
+            >
+              {CATEGORIES.map((option) => (
+                <MenuItem key={option} value={option}>
+                  {option}
+                </MenuItem>
+              ))}
+            </TextField>
             <Button type="submit" variant="contained">
               Add Rule
             </Button>

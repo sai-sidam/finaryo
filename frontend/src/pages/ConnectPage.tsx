@@ -12,22 +12,18 @@ import ListItem from "@mui/material/ListItem";
 import ListItemText from "@mui/material/ListItemText";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import { useFinanceApp } from "../context/FinanceAppContext";
 import { formatCurrency } from "../utils";
 
+// Keeps the Plaid SDK out of the main bundle until this page renders.
+const PlaidConnectCard = lazy(() => import("../components/PlaidConnectCard"));
+
 export default function ConnectPage() {
   const [invalidOpen, setInvalidOpen] = useState(false);
-  const fin = useFinanceApp();
   const {
-    requestConnectBank,
-    syncPlaidTransactions,
-    isCreatingLinkToken,
-    isSyncingPlaid,
-    isPlaidConnected,
-    plaidSummary,
     handleStatementUpload,
     statementFile,
     setStatementFile,
@@ -35,7 +31,7 @@ export default function ConnectPage() {
     isUploadingStatement,
     uploadResult,
     balanceSheet,
-  } = fin;
+  } = useFinanceApp();
 
   return (
     <>
@@ -96,6 +92,9 @@ export default function ConnectPage() {
               <Button variant="outlined" component="label">
                 Choose file
                 <input
+                  // Remount the input when the file is cleared (e.g. after a
+                  // successful upload) so the same file can be re-picked.
+                  key={statementFile ? statementFile.name : "empty"}
                   type="file"
                   accept=".xlsx,.xls,.csv"
                   hidden
@@ -165,46 +164,9 @@ export default function ConnectPage() {
           </CardContent>
         </Card>
 
-        <Card variant="outlined">
-          <CardContent>
-            <Typography variant="subtitle1" component="h2" gutterBottom>
-              Live bank connection (Plaid)
-            </Typography>
-            <Alert severity="info" sx={{ mb: 2 }}>
-              Automatic syncing is available when Plaid is enabled for production. Until then, rely on your bank&apos;s
-              export and the import above—your data still lands in the same transaction list.
-            </Alert>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: "72ch" }}>
-              Connect uses a secure hosted flow; credentials stay between your browser and your bank. After linking, sync
-              pulls the latest transactions into Finaryo.
-            </Typography>
-            <Stack spacing={2} sx={{ flexDirection: { xs: "column", sm: "row" } }}>
-              <Button variant="outlined" onClick={() => void requestConnectBank()} disabled={isCreatingLinkToken}>
-                {isCreatingLinkToken ? "Preparing Link…" : "Connect bank"}
-              </Button>
-              <Button
-                variant="outlined"
-                onClick={() => void syncPlaidTransactions()}
-                disabled={isSyncingPlaid || !isPlaidConnected}
-              >
-                {isSyncingPlaid ? "Syncing…" : "Sync transactions"}
-              </Button>
-            </Stack>
-            {isCreatingLinkToken || isSyncingPlaid ? <LinearProgress sx={{ mt: 2 }} /> : null}
-            {plaidSummary ? (
-              <Box sx={{ mt: 2 }}>
-                <Typography variant="body2">
-                  Last sync: <strong>{plaidSummary.addedCount}</strong> added,{" "}
-                  <strong>{plaidSummary.modifiedCount}</strong> updated, <strong>{plaidSummary.removedCount}</strong>{" "}
-                  removed.
-                </Typography>
-                <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
-                  Connection reference: {plaidSummary.itemId ?? "—"}
-                </Typography>
-              </Box>
-            ) : null}
-          </CardContent>
-        </Card>
+        <Suspense fallback={<LinearProgress />}>
+          <PlaidConnectCard />
+        </Suspense>
 
         {balanceSheet && balanceSheet.accounts.length > 0 && (
           <Card variant="outlined">

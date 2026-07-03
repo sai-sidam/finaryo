@@ -33,7 +33,7 @@ async function run() {
     await request(`/api/transactions/expense/${firstExpense.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category: "SmokeUpdated" }),
+      body: JSON.stringify({ category: "Other" }),
     });
   }
 
@@ -84,7 +84,7 @@ async function run() {
   const rule = await request("/api/categorization-rules", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ keyword: "smoke-keyword", category: "SmokeCategory" }),
+    body: JSON.stringify({ keyword: "smoke-keyword", category: "Other" }),
   });
   await request("/api/categorization-rules");
   await request(`/api/categorization-rules/${rule.data.id}`, { method: "DELETE" });

@@ -1,8 +1,7 @@
 import crypto from "node:crypto";
+import { getPrismaClient } from "./db.js";
 
-const encryptedTokenByUser = new Map();
-const plaidItemByUser = new Map();
-const transactionCursorByUser = new Map();
+const prisma = getPrismaClient();
 
 function deriveKey(encryptionSecret) {
   return crypto.createHash("sha256").update(encryptionSecret).digest();
@@ -38,27 +37,39 @@ export function decryptSecret(encryptedPayload, encryptionSecret) {
   return decrypted.toString("utf8");
 }
 
-export function savePlaidAccessToken({ userId, encryptedAccessToken, itemId }) {
-  encryptedTokenByUser.set(userId, encryptedAccessToken);
-  plaidItemByUser.set(userId, itemId);
+export async function savePlaidAccessToken({ userId, encryptedAccessToken, itemId }) {
+  const serialized = JSON.stringify(encryptedAccessToken);
+  await prisma.plaidItem.upsert({
+    where: { userId },
+    update: { itemId, encryptedAccessToken: serialized, transactionsCursor: null },
+    create: { userId, itemId, encryptedAccessToken: serialized },
+  });
 }
 
-export function getPlaidAccessToken({ userId, encryptionSecret }) {
-  const encryptedAccessToken = encryptedTokenByUser.get(userId);
-  if (!encryptedAccessToken) {
+export async function getPlaidAccessToken({ userId, encryptionSecret }) {
+  const item = await prisma.plaidItem.findUnique({ where: { userId } });
+  if (!item) {
     return null;
   }
-  return decryptSecret(encryptedAccessToken, encryptionSecret);
+  return decryptSecret(JSON.parse(item.encryptedAccessToken), encryptionSecret);
 }
 
-export function getPlaidItemId(userId) {
-  return plaidItemByUser.get(userId) ?? null;
+export async function getPlaidItemId(userId) {
+  const item = await prisma.plaidItem.findUnique({ where: { userId }, select: { itemId: true } });
+  return item?.itemId ?? null;
 }
 
-export function getTransactionsCursor(userId) {
-  return transactionCursorByUser.get(userId) ?? null;
+export async function getTransactionsCursor(userId) {
+  const item = await prisma.plaidItem.findUnique({
+    where: { userId },
+    select: { transactionsCursor: true },
+  });
+  return item?.transactionsCursor ?? null;
 }
 
-export function setTransactionsCursor(userId, cursor) {
-  transactionCursorByUser.set(userId, cursor);
+export async function setTransactionsCursor(userId, cursor) {
+  await prisma.plaidItem.update({
+    where: { userId },
+    data: { transactionsCursor: cursor },
+  });
 }

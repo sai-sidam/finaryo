@@ -20,6 +20,9 @@ function parseProducts(rawProducts) {
 }
 
 export function createPlaidClient(config) {
+  if (!config.PLAID_CLIENT_ID || !config.PLAID_SECRET) {
+    return null;
+  }
   const plaidConfig = new Configuration({
     basePath: PlaidEnvironments[config.PLAID_ENV],
     baseOptions: {

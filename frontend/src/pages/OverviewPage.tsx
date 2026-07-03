@@ -20,7 +20,7 @@ import PageHeader from "../components/PageHeader";
 import SectionCard from "../components/SectionCard";
 import { useFinanceApp } from "../context/FinanceAppContext";
 import type { DebtAccount, Expense, HandLoan, Transaction } from "../types";
-import { formatCurrency, toMonthKey } from "../utils";
+import { formatCurrency, formatDateOnly, toMonthKey } from "../utils";
 
 function StatBlock({ label, value, emphasize }: { label: string; value: string; emphasize?: "positive" | "negative" | "neutral" }) {
   const color =
@@ -348,7 +348,7 @@ export default function OverviewPage() {
                   {recent.map((t: Transaction) => (
                     <TableRow key={`${t.sourceType}-${t.id}`} hover>
                       <TableCell>{t.description}</TableCell>
-                      <TableCell>{new Date(t.date).toLocaleDateString()}</TableCell>
+                      <TableCell>{formatDateOnly(t.date)}</TableCell>
                       <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                         {formatCurrency(t.amount)}
                       </TableCell>
